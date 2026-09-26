@@ -18,6 +18,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Reconstruct reviewed binary TSR fixture
+        run: |
+          set -euo pipefail
+          if [ ! -f tests/fixtures/SEAL_1243_R5_AUTHORITY_MASTER.tsr ]; then
+            base64 -d tests/fixtures/SEAL_1243_R5_AUTHORITY_MASTER.tsr.b64 > tests/fixtures/SEAL_1243_R5_AUTHORITY_MASTER.tsr
+          fi
+          test "$(sha256sum tests/fixtures/SEAL_1243_R5_AUTHORITY_MASTER.tsr | awk '{print $1}')" = "e27dee9acad28e7c0e0296d21af25fe7328c5d4eee2b8294518a44473d265d11"
       - name: Run reviewed deterministic acceptance suites
         run: |
           set -euo pipefail
