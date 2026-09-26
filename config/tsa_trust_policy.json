@@ -1,0 +1,10 @@
+{
+  "freetsa_ca_sha256": "2151b61137ffa86bf664691ba67e7da0b19f98c758e3d228d5d8ebf27e044438",
+  "freetsa_ca_url": "https://freetsa.org/files/cacert.pem",
+  "freetsa_tsa_cert_sha256": "8bfb0305bb64e2571ca507552ef3245cb1c2fee8728e0ff8689225081ea13467",
+  "freetsa_tsa_cert_url": "https://freetsa.org/files/tsa.crt",
+  "note": "Certificate byte SHA256 values pinned from FreeTSA official site before 1243 cutoff; operator-supplied CA/cert must match these exact hashes.",
+  "provider": "FreeTSA",
+  "provider_url": "https://freetsa.org/",
+  "schema": "M8_TIMESTAMP_TRUST_POLICY_V1"
+}
