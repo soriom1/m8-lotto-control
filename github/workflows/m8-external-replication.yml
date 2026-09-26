@@ -1,0 +1,47 @@
+name: M8 External Replication ER1 (manual only, candidate)
+
+on:
+  workflow_dispatch:
+    inputs:
+      prereg_path:
+        description: 'Path to SEALED ER1 V2 preregistration'
+        required: true
+      data_manifest_path:
+        description: 'Path to immutable V2 data manifest with raw/normalized SHA256 and secondary crosscheck PASS'
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: m8-external-replication-er1
+  cancel-in-progress: false
+
+jobs:
+  replicate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Design gate
+        run: |
+          set -euo pipefail
+          echo 'This workflow remains NOT DEPLOYABLE until m8_replication_preflight.py and m8_external_replication.py are fixed-acceptance reviewed.'
+          test -f scripts/m8_replication_preflight.py
+          test -f scripts/m8_external_replication.py
+      - name: Fail closed unless sealed prereg and source manifest pass
+        run: |
+          python scripts/m8_replication_preflight.py \
+            --prereg '${{ inputs.prereg_path }}' \
+            --manifest '${{ inputs.data_manifest_path }}'
+      - name: Run exact frozen ER1 once
+        run: |
+          python scripts/m8_external_replication.py \
+            --prereg '${{ inputs.prereg_path }}' \
+            --manifest '${{ inputs.data_manifest_path }}'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: m8-er1-result
+          path: out/
