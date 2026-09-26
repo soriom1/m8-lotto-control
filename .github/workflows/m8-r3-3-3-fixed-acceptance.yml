@@ -18,13 +18,20 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Reconstruct reviewed binary TSR fixture
+      - name: Reconstruct reviewed acceptance bytes from transport bundles
         run: |
           set -euo pipefail
-          if [ ! -f tests/fixtures/SEAL_1243_R5_AUTHORITY_MASTER.tsr ]; then
-            base64 -d tests/fixtures/SEAL_1243_R5_AUTHORITY_MASTER.tsr.b64 > tests/fixtures/SEAL_1243_R5_AUTHORITY_MASTER.tsr
-          fi
+          tar -xzf tests/transport/r333_tests.tgz
+          tar -xzf tests/transport/r333_fixtures.tgz
+          test "$(sha256sum tests/test_r3_3_trust_root.py | awk '{print $1}')" = "ff946d6b8d65dd17173d2e19b1e8e602175384909ed1cad4bbc3318989a30c2d"
+          test "$(sha256sum tests/test_r3_3_regression.py | awk '{print $1}')" = "866d5c57602b326be5b798480611ee26f8649e2aca306b77a4838f5ce5384607"
+          test "$(sha256sum tests/test_r3_3_2_free_anchor.py | awk '{print $1}')" = "010839240f4883d224cb61c1372f1b73ffcab11e49e77e8419f4227ee438a5b9"
+          test "$(sha256sum tests/test_r3_3_3_anchor_scoring_gate.py | awk '{print $1}')" = "4ab0f64dcba5ca39e0a59687ae2d28319dae5a28f47f61b1e11bebdd367c1ee4"
+          test "$(sha256sum tests/fixtures/M8_TIMESTAMP_TRUST_POLICY_V1.json | awk '{print $1}')" = "93b1ef5e10156e86e4d93d42f77f509cd271a2683a9ee52a78152a69304b6c6f"
           test "$(sha256sum tests/fixtures/SEAL_1243_R5_AUTHORITY_MASTER.tsr | awk '{print $1}')" = "e27dee9acad28e7c0e0296d21af25fe7328c5d4eee2b8294518a44473d265d11"
+          test "$(sha256sum tests/fixtures/SEAL_1243_R5_AUTHORITY_MASTER.txt | awk '{print $1}')" = "0c68c940410554cd0b44ab7077b2d6b01782bf86505db71b9dab0d5139d74970"
+          test "$(sha256sum tests/fixtures/freetsa_ca.pem | awk '{print $1}')" = "2151b61137ffa86bf664691ba67e7da0b19f98c758e3d228d5d8ebf27e044438"
+          test "$(sha256sum tests/fixtures/freetsa_tsa.crt | awk '{print $1}')" = "8bfb0305bb64e2571ca507552ef3245cb1c2fee8728e0ff8689225081ea13467"
       - name: Run reviewed deterministic acceptance suites
         run: |
           set -euo pipefail
