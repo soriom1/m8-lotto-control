@@ -1,0 +1,30 @@
+{
+  "schema": "M8_PUBLIC_CONTROL_PROFILE_V1",
+  "profile_id": "GITHUB_FREE_PUBLIC_CONTROL_PRIVATE_DATA_V1",
+  "private_repo": "soriom1/m8-lotto",
+  "private_branch": "main",
+  "public_control_repo": "soriom1/m8-lotto-control",
+  "control_branch": "main",
+  "anchor_branch": "anchor",
+  "anchor_ledger_path": "anchor_ledger.jsonl",
+  "anchor_payload_dir": "anchors",
+  "private_pat_secret_name": "M8_PRIVATE_REPO_PAT",
+  "tsa_url_secret_name": "M8_TSA_URL",
+  "tsa_ca_secret_name": "M8_TSA_CA_PEM_B64",
+  "tsa_signer_secret_name": "M8_TSA_SIGNER_PEM_B64",
+  "public_data_policy": "HASHES_AND_EVENT_METADATA_ONLY_NO_PREDICTION_NUMBERS_NO_EXCEL_NO_PRIVATE_SOURCE",
+  "control_main_protection": {
+    "require_pull_request": true,
+    "require_status_checks": true,
+    "block_force_push": true,
+    "block_deletion": true,
+    "enforce_admins": true
+  },
+  "anchor_branch_protection": {
+    "require_pull_request": false,
+    "block_force_push": true,
+    "block_deletion": true,
+    "enforce_admins": true,
+    "normal_fast_forward_pushes_from_control_workflow": true
+  }
+}
