@@ -1,0 +1,34 @@
+name: M8 R3.3.3 Fixed Acceptance
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  acceptance:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run reviewed deterministic acceptance suites
+        run: |
+          set -euo pipefail
+          python tests/test_r3_3_trust_root.py
+          python tests/test_r3_3_regression.py
+          python tests/test_r3_3_2_free_anchor.py
+          python tests/test_r3_3_3_anchor_scoring_gate.py
+      - name: Reject bytecode artifacts
+        run: |
+          set -euo pipefail
+          if find . -type d -name __pycache__ -o -type f -name '*.pyc' | grep -q .; then
+            echo 'BYTECODE_ARTIFACT_FOUND'
+            exit 1
+          fi
