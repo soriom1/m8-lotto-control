@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "M8_OUTCOME_AUTH_RECORD_SCHEMA_V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema","round","official_draw_time_kst","winning_numbers","bonus_number","official_source"],
+  "properties": {
+    "schema": {"const": "M8_OUTCOME_AUTH_RECORD_V1"},
+    "round": {"type": "integer", "minimum": 1244},
+    "official_draw_time_kst": {"type": "string", "format": "date-time"},
+    "winning_numbers": {
+      "type": "array", "minItems": 6, "maxItems": 6, "uniqueItems": true,
+      "items": {"type": "integer", "minimum": 1, "maximum": 45}
+    },
+    "bonus_number": {"type": "integer", "minimum": 1, "maximum": 45},
+    "official_source": {
+      "type": "object", "additionalProperties": false,
+      "required": ["source_url","artifact_path","artifact_sha256"],
+      "properties": {
+        "source_url": {"type": "string", "pattern": "^https://"},
+        "artifact_path": {"type": "string", "minLength": 1},
+        "artifact_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    }
+  }
+}

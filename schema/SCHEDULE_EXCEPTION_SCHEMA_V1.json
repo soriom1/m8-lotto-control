@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "M8_SCHEDULE_EXCEPTION_SCHEMA_V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "round", "default_cutoff_time_kst", "default_draw_time_kst",
+    "effective_cutoff_time_kst", "effective_draw_time_kst", "official_notice", "timestamp_evidence"
+  ],
+  "properties": {
+    "schema": {"const": "M8_SCHEDULE_EXCEPTION_V1"},
+    "round": {"type": "integer", "minimum": 1244},
+    "default_cutoff_time_kst": {"type": "string", "format": "date-time"},
+    "default_draw_time_kst": {"type": "string", "format": "date-time"},
+    "effective_cutoff_time_kst": {"type": "string", "format": "date-time"},
+    "effective_draw_time_kst": {"type": "string", "format": "date-time"},
+    "official_notice": {
+      "type": "object", "additionalProperties": false,
+      "required": ["source_url", "artifact_path", "artifact_sha256"],
+      "properties": {
+        "source_url": {"type": "string", "pattern": "^https://"},
+        "artifact_path": {"type": "string", "minLength": 1},
+        "artifact_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "timestamp_evidence": {
+      "type": "object", "additionalProperties": false,
+      "required": ["tsr_path", "tsa_trust_policy_sha256"],
+      "properties": {
+        "tsr_path": {"type": "string", "minLength": 1},
+        "tsa_trust_policy_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    }
+  }
+}

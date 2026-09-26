@@ -1,0 +1,26 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema",
+  "type":"object",
+  "required":["schema","sequence","event_type","round","prev_anchor_event_sha256","private_repo","private_branch","private_commit_sha","release_registry_head_sha256","round_ledger_head_sha256","round_ledger_tail","release_registry_tail","authority_sha256","authority_tsr_sha256","anchor_record_sha256","anchor_tsr_sha256","anchor_gentime_utc","confirmatory_anchor_status"],
+  "properties":{
+    "schema":{"const":"M8_PUBLIC_ANCHOR_EVENT_V1"},
+    "sequence":{"type":"integer","minimum":1},
+    "event_type":{"enum":["ACTIVATION","PREDRAW_REGISTERED","OUTCOME_AUTHENTICATED","SCORE_APPENDED","CORRECTION_APPENDED","RELEASE_CHANGED","ADMIN_MISSED"]},
+    "round":{"type":["integer","null"],"minimum":1244},
+    "prev_anchor_event_sha256":{"type":"string","pattern":"^(GENESIS|[0-9a-f]{64})$"},
+    "private_repo":{"type":"string","minLength":3},"private_branch":{"type":"string","minLength":1},
+    "private_commit_sha":{"type":"string","pattern":"^[0-9a-f]{40}$"},
+    "release_registry_head_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},
+    "round_ledger_head_sha256":{"type":"string","pattern":"^(GENESIS|[0-9a-f]{64})$"},
+    "round_ledger_tail":{"type":"array","items":{"$ref":"#/$defs/tail"}},
+    "release_registry_tail":{"type":"array","items":{"$ref":"#/$defs/tail"}},
+    "authority_sha256":{"type":["string","null"],"pattern":"^[0-9a-f]{64}$"},
+    "authority_tsr_sha256":{"type":["string","null"],"pattern":"^[0-9a-f]{64}$"},
+    "anchor_record_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},
+    "anchor_tsr_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},
+    "anchor_gentime_utc":{"type":"string"},
+    "confirmatory_anchor_status":{"enum":["ON_TIME_PUBLIC_ANCHOR","TRACK_ONLY_LATE_PUBLIC_ANCHOR","ACTIVATION"]}
+  },
+  "$defs":{"tail":{"type":"object","required":["event_hash","prev_event_sha256","event_type","round"],"properties":{"event_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"prev_event_sha256":{"type":"string","pattern":"^(GENESIS|[0-9a-f]{64})$"},"event_type":{"type":"string"},"round":{"type":["integer","null"]}},"additionalProperties":false}},
+  "additionalProperties":false
+}
