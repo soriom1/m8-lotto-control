@@ -30,7 +30,7 @@ jobs:
           test "$(sha256sum tests/fixtures/M8_TIMESTAMP_TRUST_POLICY_V1.json | awk '{print $1}')" = "93b1ef5e10156e86e4d93d42f77f509cd271a2683a9ee52a78152a69304b6c6f"
           test "$(sha256sum tests/fixtures/SEAL_1243_R5_AUTHORITY_MASTER.tsr | awk '{print $1}')" = "e27dee9acad28e7c0e0296d21af25fe7328c5d4eee2b8294518a44473d265d11"
           test "$(sha256sum tests/fixtures/SEAL_1243_R5_AUTHORITY_MASTER.txt | awk '{print $1}')" = "0c68c940410554cd0b44ab7077b2d6b01782bf86505db71b9dab0d5139d74970"
-          test "$(sha256sum tests/fixtures/freetsa_ca.pem | awk '{print $1}')" = "2151b61137ffa86bf664691ba67e7da0b19f98c758e3d228d5d8ebf27e044438"
+          test "$(sha256sum tests/fixtures/freetsa_ca.pem | awk '{print $1}')" = "2151b61137ffa86bf664691ba67e7da0b19f98c758e3d228d5d8ebf27e0444438"
           test "$(sha256sum tests/fixtures/freetsa_tsa.crt | awk '{print $1}')" = "8bfb0305bb64e2571ca507552ef3245cb1c2fee8728e0ff8689225081ea13467"
       - name: Run reviewed deterministic acceptance suites
         run: |
@@ -46,3 +46,114 @@ jobs:
             echo 'BYTECODE_ARTIFACT_FOUND'
             exit 1
           fi
+
+  cross_repo_rehearsal:
+    if: github.event_name == 'pull_request' && github.head_ref == 'r3-3-3-live-rehearsal-harness'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PRIVATE_REPO: soriom1/m8-lotto
+      PRIVATE_BRANCH: rehearsal-v7-r333
+      ANCHOR_BRANCH: rehearsal-anchor-v7-r333
+      AUTHORITY_PATH: authority/ROUND_AUTHORITY_001244_REHEARSAL.json
+    steps:
+      - name: Checkout protected public control main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          path: control
+      - name: Checkout isolated private rehearsal branch
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.PRIVATE_REPO }}
+          ref: ${{ env.PRIVATE_BRANCH }}
+          token: ${{ secrets.M8_PRIVATE_REPO_PAT }}
+          fetch-depth: 0
+          path: private
+      - name: Checkout isolated public rehearsal anchor branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.ANCHOR_BRANCH }}
+          fetch-depth: 0
+          path: anchorrepo
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Load and pin FreeTSA runtime material
+        env:
+          TSA_URL: ${{ secrets.M8_TSA_URL }}
+          TSA_CA_PEM_B64: ${{ secrets.M8_TSA_CA_PEM_B64 }}
+          TSA_SIGNER_PEM_B64: ${{ secrets.M8_TSA_SIGNER_PEM_B64 }}
+        run: |
+          set -euo pipefail
+          test "$TSA_URL" = "https://freetsa.org/tsr"
+          test -n "$TSA_CA_PEM_B64" && test -n "$TSA_SIGNER_PEM_B64"
+          printf '%s' "$TSA_CA_PEM_B64" | base64 -d > /tmp/tsa_ca.pem
+          printf '%s' "$TSA_SIGNER_PEM_B64" | base64 -d > /tmp/tsa_signer.pem
+          test "$(sha256sum /tmp/tsa_ca.pem | awk '{print $1}')" = "2151b61137ffa86bf664691ba67e7da0b19f98c758e3d228d5d8ebf27e044438"
+          test "$(sha256sum /tmp/tsa_signer.pem | awk '{print $1}')" = "8bfb0305bb64e2571ca507552ef3245cb1c2fee8728e0ff8689225081ea13467"
+          python control/scripts/m8_verify_trust_policy.py --policy control/config/tsa_trust_policy.json --ca-file /tmp/tsa_ca.pem --signer-file /tmp/tsa_signer.pem
+      - name: Validate isolated private state and synthetic Authority
+        run: |
+          set -euo pipefail
+          test "$(python control/scripts/m8_ledger_head.py private/round_ledger.jsonl)" = "GENESIS"
+          python control/scripts/m8_validate_json_schema.py --schema control/schema/ROUND_AUTHORITY_SCHEMA_V1.json --instance "private/$AUTHORITY_PATH"
+          python control/scripts/m8_verify_release_approved.py --registry private/release_registry.jsonl --authority "private/$AUTHORITY_PATH"
+          python control/scripts/m8_schedule.py --authority "private/$AUTHORITY_PATH" --no-verify-exception-tsr
+          python control/scripts/m8_verify_anchor_git_history.py --repo anchorrepo --branch HEAD --path anchor_ledger.jsonl
+      - name: Obtain and verify real FreeTSA Authority receipt
+        env:
+          TSA_URL: ${{ secrets.M8_TSA_URL }}
+        run: |
+          set -euo pipefail
+          mkdir -p private/evidence/rehearsal_round_1244
+          openssl ts -query -data "private/$AUTHORITY_PATH" -sha256 -cert -out private/evidence/rehearsal_round_1244/authority.tsq
+          curl --fail --silent --show-error -H 'Content-Type: application/timestamp-query' -H 'Accept: application/timestamp-reply' --data-binary '@private/evidence/rehearsal_round_1244/authority.tsq' "$TSA_URL" -o private/evidence/rehearsal_round_1244/authority.tsr
+          openssl ts -verify -queryfile private/evidence/rehearsal_round_1244/authority.tsq -in private/evidence/rehearsal_round_1244/authority.tsr -CAfile /tmp/tsa_ca.pem -untrusted /tmp/tsa_signer.pem
+          python control/scripts/m8_verify_tsr.py --tsr private/evidence/rehearsal_round_1244/authority.tsr --round 1244 --authority "private/$AUTHORITY_PATH" --exception-dir private/schedule_exceptions --ca-file /tmp/tsa_ca.pem --signer-file /tmp/tsa_signer.pem --trust-policy-sha 93b1ef5e10156e86e4d93d42f77f509cd271a2683a9ee52a78152a69304b6c6f
+      - name: Append and push isolated private PREDRAW rehearsal
+        run: |
+          set -euo pipefail
+          python control/scripts/m8_append_predraw_event.py --ledger private/round_ledger.jsonl --release-registry private/release_registry.jsonl --authority "private/$AUTHORITY_PATH" --tsr private/evidence/rehearsal_round_1244/authority.tsr --trust-policy-file control/config/tsa_trust_policy.json --ca-file /tmp/tsa_ca.pem --signer-file /tmp/tsa_signer.pem --exception-dir private/schedule_exceptions
+          cd private
+          git config user.name 'm8-rehearsal-bot'
+          git config user.email 'm8-rehearsal-bot@users.noreply.github.com'
+          git add round_ledger.jsonl evidence/
+          git commit -m 'Non-production R3.3.3 cross-repo rehearsal private append'
+          git push origin HEAD:${PRIVATE_BRANCH}
+          echo "PRIVATE_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+      - name: Build, timestamp, append and push isolated public rehearsal anchor
+        env:
+          TSA_URL: ${{ secrets.M8_TSA_URL }}
+        run: |
+          set -euo pipefail
+          mkdir -p anchorrepo/anchors
+          RECORD=anchorrepo/anchors/REHEARSAL_ANCHOR_000001.json
+          python control/scripts/m8_build_public_anchor_record.py --anchor-ledger anchorrepo/anchor_ledger.jsonl --private-registry private/release_registry.jsonl --private-ledger private/round_ledger.jsonl --private-repo "$PRIVATE_REPO" --private-branch "$PRIVATE_BRANCH" --private-commit-sha "$PRIVATE_COMMIT" --event-type PREDRAW_REGISTERED --round 1244 --authority "private/$AUTHORITY_PATH" --authority-tsr private/evidence/rehearsal_round_1244/authority.tsr --out "$RECORD"
+          openssl ts -query -data "$RECORD" -sha256 -cert -out anchorrepo/anchors/REHEARSAL_ANCHOR_000001.tsq
+          curl --fail --silent --show-error -H 'Content-Type: application/timestamp-query' -H 'Accept: application/timestamp-reply' --data-binary '@anchorrepo/anchors/REHEARSAL_ANCHOR_000001.tsq' "$TSA_URL" -o anchorrepo/anchors/REHEARSAL_ANCHOR_000001.tsr
+          openssl ts -verify -data "$RECORD" -in anchorrepo/anchors/REHEARSAL_ANCHOR_000001.tsr -CAfile /tmp/tsa_ca.pem -untrusted /tmp/tsa_signer.pem
+          GENTIME="$(python - <<'PY'
+          import sys
+          sys.path.insert(0,'control/scripts')
+          from m8_schedule import _gentime
+          print(_gentime('anchorrepo/anchors/REHEARSAL_ANCHOR_000001.tsr').isoformat())
+          PY
+          )"
+          python control/scripts/m8_public_anchor.py append --anchor-ledger anchorrepo/anchor_ledger.jsonl --private-registry private/release_registry.jsonl --private-ledger private/round_ledger.jsonl --private-repo "$PRIVATE_REPO" --private-branch "$PRIVATE_BRANCH" --private-commit-sha "$PRIVATE_COMMIT" --event-type PREDRAW_REGISTERED --round 1244 --authority "private/$AUTHORITY_PATH" --authority-tsr private/evidence/rehearsal_round_1244/authority.tsr --anchor-record "$RECORD" --anchor-tsr anchorrepo/anchors/REHEARSAL_ANCHOR_000001.tsr --anchor-gentime-utc "$GENTIME" --confirmatory-anchor-status ON_TIME_PUBLIC_ANCHOR
+          cd anchorrepo
+          git config user.name 'm8-rehearsal-bot'
+          git config user.email 'm8-rehearsal-bot@users.noreply.github.com'
+          git add anchor_ledger.jsonl anchors/
+          git commit -m 'Non-production R3.3.3 cross-repo rehearsal public anchor'
+          git push origin HEAD:${ANCHOR_BRANCH}
+      - name: Verify isolated cross-repo state after both pushes
+        run: |
+          set -euo pipefail
+          python control/scripts/m8_public_anchor.py verify-private --anchor-ledger anchorrepo/anchor_ledger.jsonl --private-registry private/release_registry.jsonl --private-ledger private/round_ledger.jsonl
+          python control/scripts/m8_verify_anchor_git_history.py --repo anchorrepo --branch HEAD --path anchor_ledger.jsonl
+          python control/scripts/m8_score_eligibility.py --ledger private/round_ledger.jsonl --round 1244 --authority "private/$AUTHORITY_PATH" --ca-file /tmp/tsa_ca.pem --signer-file /tmp/tsa_signer.pem --exception-dir private/schedule_exceptions --release-registry private/release_registry.jsonl --anchor-ledger anchorrepo/anchor_ledger.jsonl
+          echo 'PASS_R3_3_3_NONPRODUCTION_CROSS_REPO_REHEARSAL'
