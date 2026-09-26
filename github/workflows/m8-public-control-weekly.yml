@@ -1,0 +1,212 @@
+name: M8 Public Control Weekly Authority
+
+on:
+  schedule:
+    - cron: '0 9 * * 6'   # Saturday 18:00 KST
+  workflow_dispatch:
+    inputs:
+      authority_path:
+        description: 'Private repo authority path; blank = auto-select'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+concurrency:
+  group: m8-public-control-weekly
+  cancel-in-progress: false
+
+env:
+  PRIVATE_REPO: soriom1/m8-lotto
+  PRIVATE_BRANCH: main
+  ANCHOR_BRANCH: anchor
+
+jobs:
+  control:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout protected public control code
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          path: control
+
+      - name: Checkout private state repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.PRIVATE_REPO }}
+          ref: ${{ env.PRIVATE_BRANCH }}
+          token: ${{ secrets.M8_PRIVATE_REPO_PAT }}
+          fetch-depth: 0
+          path: private
+
+      - name: Checkout public anchor branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.ANCHOR_BRANCH }}
+          fetch-depth: 0
+          path: anchorrepo
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Load fixed FreeTSA runtime material
+        env:
+          TSA_URL: ${{ secrets.M8_TSA_URL }}
+          TSA_CA_PEM_B64: ${{ secrets.M8_TSA_CA_PEM_B64 }}
+          TSA_SIGNER_PEM_B64: ${{ secrets.M8_TSA_SIGNER_PEM_B64 }}
+        run: |
+          set -euo pipefail
+          test -n "$TSA_URL" && test -n "$TSA_CA_PEM_B64" && test -n "$TSA_SIGNER_PEM_B64"
+          printf '%s' "$TSA_CA_PEM_B64" | base64 -d > /tmp/tsa_ca.pem
+          printf '%s' "$TSA_SIGNER_PEM_B64" | base64 -d > /tmp/tsa_signer.pem
+          python control/scripts/m8_verify_trust_policy.py --policy control/config/tsa_trust_policy.json --ca-file /tmp/tsa_ca.pem --signer-file /tmp/tsa_signer.pem
+
+      - name: Verify public anchor history is append-only and private state matches latest anchor
+        run: |
+          set -euo pipefail
+          python control/scripts/m8_verify_anchor_git_history.py --repo anchorrepo --branch HEAD --path anchor_ledger.jsonl
+          python control/scripts/m8_public_anchor.py verify-private \
+            --anchor-ledger anchorrepo/anchor_ledger.jsonl \
+            --private-registry private/release_registry.jsonl \
+            --private-ledger private/round_ledger.jsonl
+
+      - name: Select exactly one due private Authority
+        id: sel
+        env:
+          INPUT_AUTH: ${{ inputs.authority_path }}
+        run: |
+          set -euo pipefail
+          if [ -n "${INPUT_AUTH:-}" ]; then
+            test -f "private/$INPUT_AUTH"
+            printf 'path=%s\n' "private/$INPUT_AUTH" >> "$GITHUB_OUTPUT"
+          else
+            SEL="$(python control/scripts/m8_select_due_authority.py --dir private/authority --window-hours 6)"
+            python - "$SEL" "$GITHUB_OUTPUT" <<'PY'
+          import json,sys
+          d=json.loads(sys.argv[1])
+          with open(sys.argv[2],'a') as f: f.write('path='+d['path']+'\n')
+          PY
+          fi
+
+      - name: Validate Authority, approved release and schedule
+        id: gate
+        run: |
+          set -euo pipefail
+          AUTH='${{ steps.sel.outputs.path }}'
+          python control/scripts/m8_validate_json_schema.py --schema control/schema/ROUND_AUTHORITY_SCHEMA_V1.json --instance "$AUTH"
+          python control/scripts/m8_verify_release_approved.py --registry private/release_registry.jsonl --authority "$AUTH"
+          TRUST_SHA="$(python control/scripts/m8_verify_release_approved.py --registry private/release_registry.jsonl --authority "$AUTH" --print-trust-sha)"
+          SCHED="$(python control/scripts/m8_schedule.py --authority "$AUTH" --exception-dir private/schedule_exceptions --ca-file /tmp/tsa_ca.pem --signer-file /tmp/tsa_signer.pem --trust-policy-sha "$TRUST_SHA")"
+          ROUND="$(python - "$AUTH" <<'PY'
+          import json,sys
+          print(json.load(open(sys.argv[1],encoding='utf-8'))['round'])
+          PY
+          )"
+          CUTOFF="$(python - "$SCHED" <<'PY'
+          import json,sys
+          print(json.loads(sys.argv[1])['effective_cutoff_kst'])
+          PY
+          )"
+          echo "round=$ROUND" >> "$GITHUB_OUTPUT"
+          echo "cutoff=$CUTOFF" >> "$GITHUB_OUTPUT"
+          echo "trust_sha=$TRUST_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Bind private ledger head and request Authority RFC3161 receipt
+        id: tsa
+        env:
+          TSA_URL: ${{ secrets.M8_TSA_URL }}
+        run: |
+          set -euo pipefail
+          AUTH='${{ steps.sel.outputs.path }}'; ROUND='${{ steps.gate.outputs.round }}'
+          HEAD="$(python control/scripts/m8_ledger_head.py private/round_ledger.jsonl)"
+          PREV="$(python - "$AUTH" <<'PY'
+          import json,sys
+          print(json.load(open(sys.argv[1],encoding='utf-8'))['prev_round_ledger_head_sha256'])
+          PY
+          )"
+          test "$HEAD" = "$PREV"
+          mkdir -p "private/evidence/round_${ROUND}"
+          TSQ="private/evidence/round_${ROUND}/authority.tsq"; TSR="private/evidence/round_${ROUND}/authority.tsr"
+          openssl ts -query -data "$AUTH" -sha256 -cert -out "$TSQ"
+          curl --fail --silent --show-error -H 'Content-Type: application/timestamp-query' -H 'Accept: application/timestamp-reply' --data-binary "@$TSQ" "$TSA_URL" -o "$TSR"
+          openssl ts -verify -queryfile "$TSQ" -in "$TSR" -CAfile /tmp/tsa_ca.pem -untrusted /tmp/tsa_signer.pem
+          VERIFY_JSON="$(python control/scripts/m8_verify_tsr.py --tsr "$TSR" --round "$ROUND" --authority "$AUTH" --exception-dir private/schedule_exceptions --ca-file /tmp/tsa_ca.pem --signer-file /tmp/tsa_signer.pem --trust-policy-sha '${{ steps.gate.outputs.trust_sha }}')"
+          printf '%s' "$VERIFY_JSON" > "private/evidence/round_${ROUND}/timestamp_verification.json"
+
+      - name: Preserve Authority receipt before private mutation
+        uses: actions/upload-artifact@v4
+        with:
+          name: m8-round-${{ steps.gate.outputs.round }}-authority-evidence
+          path: private/evidence/round_${{ steps.gate.outputs.round }}/
+          if-no-files-found: error
+
+      - name: Append PREDRAW to private ledger and push private state
+        id: privatepush
+        run: |
+          set -euo pipefail
+          AUTH='${{ steps.sel.outputs.path }}'; ROUND='${{ steps.gate.outputs.round }}'
+          python control/scripts/m8_append_predraw_event.py --ledger private/round_ledger.jsonl --release-registry private/release_registry.jsonl --authority "$AUTH" --tsr "private/evidence/round_${ROUND}/authority.tsr" --trust-policy-file control/config/tsa_trust_policy.json --ca-file /tmp/tsa_ca.pem --signer-file /tmp/tsa_signer.pem --exception-dir private/schedule_exceptions
+          cd private
+          git config user.name 'm8-public-control-bot'; git config user.email 'm8-public-control-bot@users.noreply.github.com'
+          git add round_ledger.jsonl evidence/
+          git commit -m "M8 round ${ROUND} predraw from public control"
+          COMMIT="$(git rev-parse HEAD)"; echo "private_commit=$COMMIT" >> "$GITHUB_OUTPUT"
+          git push origin HEAD:${PRIVATE_BRANCH}
+
+      - name: Build and timestamp hash-only public anchor record
+        id: anchor
+        env:
+          TSA_URL: ${{ secrets.M8_TSA_URL }}
+        run: |
+          set -euo pipefail
+          ROUND='${{ steps.gate.outputs.round }}'; AUTH='${{ steps.sel.outputs.path }}'
+          mkdir -p anchorrepo/anchors
+          SEQ="$(python - <<'PY'
+          import json,pathlib
+          p=pathlib.Path('anchorrepo/anchor_ledger.jsonl')
+          print(1+sum(1 for x in p.read_text().splitlines() if x.strip()) if p.exists() else 1)
+          PY
+          )"
+          RECORD="anchorrepo/anchors/ANCHOR_$(printf '%06d' "$SEQ").json"
+          python control/scripts/m8_build_public_anchor_record.py --anchor-ledger anchorrepo/anchor_ledger.jsonl --private-registry private/release_registry.jsonl --private-ledger private/round_ledger.jsonl --private-repo "$PRIVATE_REPO" --private-branch "$PRIVATE_BRANCH" --private-commit-sha '${{ steps.privatepush.outputs.private_commit }}' --event-type PREDRAW_REGISTERED --round "$ROUND" --authority "$AUTH" --authority-tsr "private/evidence/round_${ROUND}/authority.tsr" --out "$RECORD"
+          TSQ="${RECORD%.json}.tsq"; TSR="${RECORD%.json}.tsr"
+          openssl ts -query -data "$RECORD" -sha256 -cert -out "$TSQ"
+          curl --fail --silent --show-error -H 'Content-Type: application/timestamp-query' -H 'Accept: application/timestamp-reply' --data-binary "@$TSQ" "$TSA_URL" -o "$TSR"
+          openssl ts -verify -data "$RECORD" -in "$TSR" -CAfile /tmp/tsa_ca.pem -untrusted /tmp/tsa_signer.pem
+          GENTIME="$(python - "$TSR" <<'PY'
+          import sys
+          sys.path.insert(0,'control/scripts')
+          from m8_schedule import _gentime
+          print(_gentime(sys.argv[1]).isoformat())
+          PY
+          )"
+          STATUS="$(python - "$GENTIME" '${{ steps.gate.outputs.cutoff }}' <<'PY'
+          import datetime as dt,sys
+          g=dt.datetime.fromisoformat(sys.argv[1]); c=dt.datetime.fromisoformat(sys.argv[2]).astimezone(dt.timezone.utc)
+          print('ON_TIME_PUBLIC_ANCHOR' if g<=c else 'TRACK_ONLY_LATE_PUBLIC_ANCHOR')
+          PY
+          )"
+          python control/scripts/m8_public_anchor.py append --anchor-ledger anchorrepo/anchor_ledger.jsonl --private-registry private/release_registry.jsonl --private-ledger private/round_ledger.jsonl --private-repo "$PRIVATE_REPO" --private-branch "$PRIVATE_BRANCH" --private-commit-sha '${{ steps.privatepush.outputs.private_commit }}' --event-type PREDRAW_REGISTERED --round "$ROUND" --authority "$AUTH" --authority-tsr "private/evidence/round_${ROUND}/authority.tsr" --anchor-record "$RECORD" --anchor-tsr "$TSR" --anchor-gentime-utc "$GENTIME" --confirmatory-anchor-status "$STATUS"
+          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+
+      - name: Preserve public anchor receipt before anchor push
+        uses: actions/upload-artifact@v4
+        with:
+          name: m8-round-${{ steps.gate.outputs.round }}-public-anchor
+          path: anchorrepo/anchors/
+          if-no-files-found: error
+
+      - name: Fast-forward append public anchor branch
+        run: |
+          set -euo pipefail
+          cd anchorrepo
+          git config user.name 'm8-public-control-bot'; git config user.email 'm8-public-control-bot@users.noreply.github.com'
+          git add anchor_ledger.jsonl anchors/
+          git commit -m "Anchor M8 round ${{ steps.gate.outputs.round }} private state"
+          # anchor branch protection must reject force-push and deletion; no rebase on conflict.
+          git push origin HEAD:${ANCHOR_BRANCH}
+          test '${{ steps.anchor.outputs.status }}' = 'ON_TIME_PUBLIC_ANCHOR'
