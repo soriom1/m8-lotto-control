@@ -112,7 +112,14 @@ jobs:
           set -euo pipefail
           python control/scripts/m8_validate_json_schema.py --schema control/schema/ROUND_AUTHORITY_SCHEMA_V1.json --instance "private/$AUTHORITY_PATH"
           python control/scripts/m8_verify_release_approved.py --registry private/release_registry.jsonl --authority "private/$AUTHORITY_PATH"
-          python control/scripts/m8_schedule.py --authority "private/$AUTHORITY_PATH" --no-verify-exception-tsr
+          TRUST_SHA="$(python control/scripts/m8_verify_release_approved.py --registry private/release_registry.jsonl --authority "private/$AUTHORITY_PATH" --print-trust-sha)"
+          SCHED="$(python control/scripts/m8_schedule.py --authority "private/$AUTHORITY_PATH" --exception-dir private/schedule_exceptions --ca-file /tmp/tsa_ca.pem --signer-file /tmp/tsa_signer.pem --trust-policy-sha "$TRUST_SHA")"
+          CUTOFF="$(python - "$SCHED" <<'PY'
+          import json,sys
+          print(json.loads(sys.argv[1])['effective_cutoff_kst'])
+          PY
+          )"
+          echo "CUTOFF_KST=$CUTOFF" >> "$GITHUB_ENV"
           python control/scripts/m8_verify_anchor_git_history.py --repo anchorrepo --branch HEAD --path anchor_ledger.jsonl
       - name: Obtain and verify real FreeTSA Authority receipt
         env:
@@ -174,7 +181,15 @@ jobs:
           print(_gentime('anchorrepo/anchors/REHEARSAL_ANCHOR_000001.tsr').isoformat())
           PY
           )"
-          python control/scripts/m8_public_anchor.py append --anchor-ledger anchorrepo/anchor_ledger.jsonl --private-registry private/release_registry.jsonl --private-ledger private/round_ledger.jsonl --private-repo "$PRIVATE_REPO" --private-branch "$PRIVATE_BRANCH" --private-commit-sha "$PRIVATE_COMMIT" --event-type PREDRAW_REGISTERED --round 1244 --authority "private/$AUTHORITY_PATH" --authority-tsr private/evidence/rehearsal_round_1244/authority.tsr --anchor-record "$RECORD" --anchor-tsr anchorrepo/anchors/REHEARSAL_ANCHOR_000001.tsr --anchor-gentime-utc "$GENTIME" --confirmatory-anchor-status ON_TIME_PUBLIC_ANCHOR
+          STATUS="$(python - "$GENTIME" "$CUTOFF_KST" <<'PY'
+          import datetime as dt,sys
+          g=dt.datetime.fromisoformat(sys.argv[1])
+          c=dt.datetime.fromisoformat(sys.argv[2]).astimezone(dt.timezone.utc)
+          print('ON_TIME_PUBLIC_ANCHOR' if g<=c else 'TRACK_ONLY_LATE_PUBLIC_ANCHOR')
+          PY
+          )"
+          test "$STATUS" = "ON_TIME_PUBLIC_ANCHOR"
+          python control/scripts/m8_public_anchor.py append --anchor-ledger anchorrepo/anchor_ledger.jsonl --private-registry private/release_registry.jsonl --private-ledger private/round_ledger.jsonl --private-repo "$PRIVATE_REPO" --private-branch "$PRIVATE_BRANCH" --private-commit-sha "$PRIVATE_COMMIT" --event-type PREDRAW_REGISTERED --round 1244 --authority "private/$AUTHORITY_PATH" --authority-tsr private/evidence/rehearsal_round_1244/authority.tsr --anchor-record "$RECORD" --anchor-tsr anchorrepo/anchors/REHEARSAL_ANCHOR_000001.tsr --anchor-gentime-utc "$GENTIME" --confirmatory-anchor-status "$STATUS"
           cd anchorrepo
           git config user.name 'm8-rehearsal-bot'
           git config user.email 'm8-rehearsal-bot@users.noreply.github.com'
