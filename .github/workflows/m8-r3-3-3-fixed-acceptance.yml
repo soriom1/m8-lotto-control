@@ -46,3 +46,66 @@ jobs:
             echo 'BYTECODE_ARTIFACT_FOUND'
             exit 1
           fi
+
+  activation_seal_helper:
+    if: github.event_name == 'pull_request' && github.head_ref == 'v7-r333-activation-seal-helper'
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    env:
+      MASTER: activation-seal-input/ANCHOR_000001.json
+      TSQ: activation-seal-input/ANCHOR_000001.tsq
+      TSR: activation-seal-output/ANCHOR_000001.tsr
+    steps:
+      - name: Checkout helper branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+      - name: Verify exact independently reviewed activation inputs
+        run: |
+          set -euo pipefail
+          test "$(sha256sum "$MASTER" | awk '{print $1}')" = "89f14be10eba01b308f23a5a1ac13afc2986432d14e3e5fe7f7dde63d203b59d"
+          test "$(sha256sum "$TSQ" | awk '{print $1}')" = "c9857cdd60a68640b28f5d43885ab5f65a817cb57bba8b01c30f1d76e0c2533e"
+          openssl ts -query -in "$TSQ" -text > /tmp/activation_query.txt
+          grep -q 'Nonce: 0x89451929990A5B62' /tmp/activation_query.txt
+          grep -q 'Certificate required: yes' /tmp/activation_query.txt
+      - name: Load pinned FreeTSA trust material
+        env:
+          TSA_URL: ${{ secrets.M8_TSA_URL }}
+          TSA_CA_PEM_B64: ${{ secrets.M8_TSA_CA_PEM_B64 }}
+          TSA_SIGNER_PEM_B64: ${{ secrets.M8_TSA_SIGNER_PEM_B64 }}
+        run: |
+          set -euo pipefail
+          test "$TSA_URL" = "https://freetsa.org/tsr"
+          test -n "$TSA_CA_PEM_B64" && test -n "$TSA_SIGNER_PEM_B64"
+          printf '%s' "$TSA_CA_PEM_B64" | base64 -d > /tmp/tsa_ca.pem
+          printf '%s' "$TSA_SIGNER_PEM_B64" | base64 -d > /tmp/tsa_signer.pem
+          test "$(sha256sum /tmp/tsa_ca.pem | awk '{print $1}')" = "2151b61137ffa86bf664691ba67e7da0b19f98c758e3d228d5d8ebf27e044438"
+          test "$(sha256sum /tmp/tsa_signer.pem | awk '{print $1}')" = "8bfb0305bb64e2571ca507552ef3245cb1c2fee8728e0ff8689225081ea13467"
+      - name: Obtain and verify FreeTSA RFC3161 activation receipt
+        env:
+          TSA_URL: ${{ secrets.M8_TSA_URL }}
+        run: |
+          set -euo pipefail
+          mkdir -p activation-seal-output
+          curl --fail --silent --show-error -H 'Content-Type: application/timestamp-query' -H 'Accept: application/timestamp-reply' --data-binary "@$TSQ" "$TSA_URL" -o "$TSR"
+          openssl ts -verify -queryfile "$TSQ" -in "$TSR" -CAfile /tmp/tsa_ca.pem -untrusted /tmp/tsa_signer.pem
+          openssl ts -reply -in "$TSR" -text > /tmp/activation_reply.txt
+          grep -q 'Status: Granted' /tmp/activation_reply.txt
+          grep -q 'Nonce: 0x89451929990A5B62' /tmp/activation_reply.txt
+          {
+            echo 'MASTER_SHA256=89f14be10eba01b308f23a5a1ac13afc2986432d14e3e5fe7f7dde63d203b59d'
+            echo 'TSQ_SHA256=c9857cdd60a68640b28f5d43885ab5f65a817cb57bba8b01c30f1d76e0c2533e'
+            echo "TSR_SHA256=$(sha256sum "$TSR" | awk '{print $1}')"
+            grep '^Time stamp:' /tmp/activation_reply.txt || true
+            grep '^Nonce:' /tmp/activation_reply.txt || true
+          } > activation-seal-output/receipt_meta.txt
+      - name: Persist verified receipt on helper branch only
+        run: |
+          set -euo pipefail
+          git config user.name 'm8-activation-seal-bot'
+          git config user.email 'm8-activation-seal-bot@users.noreply.github.com'
+          git add activation-seal-output/ANCHOR_000001.tsr activation-seal-output/receipt_meta.txt
+          git commit -m 'Store reviewed activation TSR [skip ci]'
+          git push origin HEAD:${{ github.head_ref }}
