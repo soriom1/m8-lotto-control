@@ -1,0 +1,55 @@
+name: M8 GTB Policy Seal Helper 20260927
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  gtb_policy_seal:
+    if: github.event_name == 'pull_request' && github.head_ref == 'm8-gtb-seal-helper-20260927'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+      - name: Obtain and verify RFC3161 receipt
+        run: |
+          set -euo pipefail
+          master='gtb-seal-input/M8_GLOBAL_TESTING_BUDGET_POLICY_SEAL_MASTER_V1.json'
+          expected_master='cf18d87cd7eeb78f641aac0a9a6a8caf1c9ce53d70b5f95eeedd47fc2ec4f407'
+          test "$(sha256sum "$master" | awk '{print $1}')" = "$expected_master"
+          mkdir -p gtb-seal-output
+          curl --fail --silent --show-error https://freetsa.org/files/cacert.pem -o /tmp/tsa_ca.pem
+          curl --fail --silent --show-error https://freetsa.org/files/tsa.crt -o /tmp/tsa_signer.pem
+          test "$(sha256sum /tmp/tsa_ca.pem | awk '{print $1}')" = '2151b61137ffa86bf664691ba67e7da0b19f98c758e3d228d5d8ebf27e044438'
+          test "$(sha256sum /tmp/tsa_signer.pem | awk '{print $1}')" = '8bfb0305bb64e2571ca507552ef3245cb1c2fee8728e0ff8689225081ea13467'
+          tsq='/tmp/policy.tsq'
+          tsr='gtb-seal-output/policy.tsr'
+          openssl ts -query -data "$master" -sha256 -cert -out "$tsq"
+          curl --fail --silent --show-error -H 'Content-Type: application/timestamp-query' -H 'Accept: application/timestamp-reply' --data-binary "@$tsq" https://freetsa.org/tsr -o "$tsr"
+          openssl ts -verify -queryfile "$tsq" -in "$tsr" -CAfile /tmp/tsa_ca.pem -untrusted /tmp/tsa_signer.pem
+          openssl ts -reply -in "$tsr" -text > /tmp/reply.txt
+          openssl ts -query -in "$tsq" -text > /tmp/query.txt
+          nonce="$(grep '^Nonce:' /tmp/query.txt | head -1 | sed 's/^Nonce: //')"
+          grep -q 'Status: Granted' /tmp/reply.txt
+          grep -q "Nonce: $nonce" /tmp/reply.txt
+          cp "$tsq" gtb-seal-output/policy.tsq
+          base64 -w0 "$tsq" > gtb-seal-output/policy.tsq.b64
+          echo >> gtb-seal-output/policy.tsq.b64
+          base64 -w0 "$tsr" > gtb-seal-output/policy.tsr.b64
+          echo >> gtb-seal-output/policy.tsr.b64
+          {
+            echo "MASTER_SHA256=$expected_master"
+            echo "TSQ_SHA256=$(sha256sum "$tsq" | awk '{print $1}')"
+            echo "TSR_SHA256=$(sha256sum "$tsr" | awk '{print $1}')"
+            grep '^Time stamp:' /tmp/reply.txt
+            grep '^Nonce:' /tmp/reply.txt
+            echo 'OPENSSL_VERIFY=PASS'
+          } > gtb-seal-output/receipt_meta.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: m8-gtb-policy-seal-receipt
+          path: gtb-seal-output
