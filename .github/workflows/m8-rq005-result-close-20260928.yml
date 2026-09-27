@@ -1,0 +1,44 @@
+name: M8 RQ005 Result Closure 20260928
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  close_rq005:
+    if: github.event_name == 'pull_request' && github.head_ref == 'm8-rq005-seal-helper-20260928'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout helper branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+          path: helper
+
+      - name: Checkout private state repository
+        uses: actions/checkout@v4
+        with:
+          repository: soriom1/m8-lotto
+          ref: main
+          token: ${{ secrets.M8_PRIVATE_REPO_PAT }}
+          fetch-depth: 0
+          path: private
+
+      - name: Append RQ005 result and close Family2
+        run: |
+          set -euo pipefail
+          python helper/rq005-seal-input/rq005_result_close.py private | tee /tmp/rq005-close.txt
+          cd private
+          git config user.name 'm8-rq005-result-bot'
+          git config user.email 'm8-rq005-result-bot@users.noreply.github.com'
+          git add research/testing_budget_ledger.jsonl research/research_queue_v1.jsonl current_state/M8_CURRENT_STATE_RQ005_CLOSED_V1.json
+          git commit -m 'Close RQ005 Family2 no advancement'
+          git push origin HEAD:main
+
+      - name: Closure evidence
+        run: |
+          cat /tmp/rq005-close.txt
