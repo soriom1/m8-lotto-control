@@ -1,0 +1,124 @@
+name: M8 RQ005 Family2 Seal Helper R2 20260928
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  PRIVATE_REPO: soriom1/m8-lotto
+  PRIVATE_BRANCH: main
+  MASTER_SHA: 98700ac05e7e6052901454d12b49f1128fbe4d419ee3d4e6ba577d47ebca192b
+  TSQ_SHA: b411b0f76811574b58e840ff4f1986fb1ae3739d3bcb2a332c16f26392cdf3bf
+
+jobs:
+  rq005_seal_r2:
+    if: github.event_name == 'pull_request' && github.head_ref == 'm8-rq005-seal-helper-20260928'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout helper branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+          path: helper
+
+      - name: Checkout private state repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.PRIVATE_REPO }}
+          ref: ${{ env.PRIVATE_BRANCH }}
+          token: ${{ secrets.M8_PRIVATE_REPO_PAT }}
+          fetch-depth: 0
+          path: private
+
+      - name: Load fixed FreeTSA trust material
+        env:
+          TSA_URL: ${{ secrets.M8_TSA_URL }}
+          TSA_CA_PEM_B64: ${{ secrets.M8_TSA_CA_PEM_B64 }}
+          TSA_SIGNER_PEM_B64: ${{ secrets.M8_TSA_SIGNER_PEM_B64 }}
+        run: |
+          set -euo pipefail
+          test "$TSA_URL" = "https://freetsa.org/tsr"
+          printf '%s' "$TSA_CA_PEM_B64" | base64 -d > /tmp/tsa_ca.pem
+          printf '%s' "$TSA_SIGNER_PEM_B64" | base64 -d > /tmp/tsa_signer.pem
+          test "$(sha256sum /tmp/tsa_ca.pem | awk '{print $1}')" = "2151b61137ffa86bf664691ba67e7da0b19f98c758e3d228d5d8ebf27e044438"
+          test "$(sha256sum /tmp/tsa_signer.pem | awk '{print $1}')" = "8bfb0305bb64e2571ca507552ef3245cb1c2fee8728e0ff8689225081ea13467"
+
+      - name: Verify full GTB chain and append preapproved m_diag=10 event
+        run: |
+          set -euo pipefail
+          python helper/rq005-seal-input/rq005_preseal_prepare.py private
+          cd private
+          if ! git diff --quiet -- research/testing_budget_ledger.jsonl; then
+            git config user.name 'm8-rq005-seal-bot'
+            git config user.email 'm8-rq005-seal-bot@users.noreply.github.com'
+            git add research/testing_budget_ledger.jsonl
+            git commit -m 'Record RQ005 pre-seal m_diag=10 carry-forward'
+            git push origin HEAD:${PRIVATE_BRANCH}
+          fi
+
+      - name: Verify seal master and timestamp query
+        run: |
+          set -euo pipefail
+          master='helper/rq005-seal-input/M8_RQ005_FAMILY2_PREREG_SEAL_MASTER_V1.json'
+          b64='helper/rq005-seal-input/M8_RQ005_FAMILY2_PREREG_SEAL_MASTER_V1.tsq.b64'
+          base64 -d "$b64" > /tmp/rq005.tsq
+          test "$(sha256sum "$master" | awk '{print $1}')" = "$MASTER_SHA"
+          test "$(sha256sum /tmp/rq005.tsq | awk '{print $1}')" = "$TSQ_SHA"
+          openssl ts -query -in /tmp/rq005.tsq -text > /tmp/query.txt
+          grep -q 'Nonce: 0x32F42F1A683301B2' /tmp/query.txt
+          grep -q 'Certificate required: yes' /tmp/query.txt
+
+      - name: Obtain and verify RFC3161 receipt
+        env:
+          TSA_URL: ${{ secrets.M8_TSA_URL }}
+        run: |
+          set -euo pipefail
+          mkdir -p rq005-seal-output
+          tsr='rq005-seal-output/M8_RQ005_FAMILY2_PREREG_SEAL_MASTER_V1.tsr'
+          curl --fail --silent --show-error \
+            -H 'Content-Type: application/timestamp-query' \
+            -H 'Accept: application/timestamp-reply' \
+            --data-binary '@/tmp/rq005.tsq' "$TSA_URL" -o "$tsr"
+          openssl ts -verify -queryfile /tmp/rq005.tsq -in "$tsr" -CAfile /tmp/tsa_ca.pem -untrusted /tmp/tsa_signer.pem
+          openssl ts -reply -in "$tsr" -text > /tmp/reply.txt
+          grep -q 'Status: Granted' /tmp/reply.txt
+          grep -q 'Nonce: 0x32F42F1A683301B2' /tmp/reply.txt
+          cp helper/rq005-seal-input/M8_RQ005_FAMILY2_PREREG_SEAL_MASTER_V1.json rq005-seal-output/
+          cp /tmp/rq005.tsq rq005-seal-output/M8_RQ005_FAMILY2_PREREG_SEAL_MASTER_V1.tsq
+          base64 -w0 "$tsr" > rq005-seal-output/M8_RQ005_FAMILY2_PREREG_SEAL_MASTER_V1.tsr.b64
+          printf '\n' >> rq005-seal-output/M8_RQ005_FAMILY2_PREREG_SEAL_MASTER_V1.tsr.b64
+          {
+            echo "MASTER_SHA256=$MASTER_SHA"
+            echo "TSQ_SHA256=$TSQ_SHA"
+            echo "TSR_SHA256=$(sha256sum "$tsr" | awk '{print $1}')"
+            grep '^Time stamp:' /tmp/reply.txt || true
+            grep '^Nonce:' /tmp/reply.txt || true
+          } > rq005-seal-output/M8_RQ005_FAMILY2_PREREG_SEAL_MASTER_V1.receipt_meta.txt
+
+      - name: Upload verified RQ005 seal receipt
+        id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: m8-rq005-family2-seal-receipt-r2
+          path: rq005-seal-output/
+          if-no-files-found: error
+
+      - name: Append Family2 seal event and authoritative state
+        env:
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+        run: |
+          set -euo pipefail
+          git -C private fetch origin main
+          git -C private reset --hard origin/main
+          python helper/rq005-seal-input/rq005_postseal_finalize.py private rq005-seal-output
+          cd private
+          git config user.name 'm8-rq005-seal-bot'
+          git config user.email 'm8-rq005-seal-bot@users.noreply.github.com'
+          git add research/testing_budget_ledger.jsonl research/research_queue_v1.jsonl research/rq005/seal current_state/M8_CURRENT_STATE_RQ005_SEALED_EXECUTION_AUTHORIZED_V1.json
+          git commit -m 'Seal RQ005 Family2 and authorize execution'
+          git push origin HEAD:${PRIVATE_BRANCH}
