@@ -1,0 +1,287 @@
+name: M8 RQ005 Family2 Seal Helper 20260928
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  PRIVATE_REPO: soriom1/m8-lotto
+  PRIVATE_BRANCH: main
+  EXPECTED_PRE_DIAG_HEAD: 893f8065eeb470c78232625415e91a5c9e2665b3cc6aa6a0427f6675896b53b3
+  EXPECTED_DIAG_HEAD: cf611a2e5c7c62376786b79fa176c8059e5d54699cb9d8bcb6bdfebaee2ccfd0
+  MASTER_SHA: 98700ac05e7e6052901454d12b49f1128fbe4d419ee3d4e6ba577d47ebca192b
+  TSQ_SHA: b411b0f76811574b58e840ff4f1986fb1ae3739d3bcb2a332c16f26392cdf3bf
+  PREREG_SHA: ad5760eebebbede978d2a4aa14415fee6fb30fd2c44e106699dba9223c9b1db7
+  CODE_SHA: 2f332acb4037ddeb5e6a8254b0db36ed9582522942eb4a6ea75997c47536eae8
+  BASELINE_SHA: bfee66330de2645801c5fffbee885ec79a0d39980dc8d81d79f68a1bf3dd819b
+  LEDGER_VALIDATION_SHA: 919c4a56d0ce5553460fc279de80021b80dfaf7b9ee02c93e2683a5fd8cd252e
+  CANDIDATE_SELECTION_SHA: f9806dc1b44b4c71eecc222909a9017bf2fe77b251894861dae8a3427c911599
+
+jobs:
+  rq005_seal:
+    if: github.event_name == 'pull_request' && github.head_ref == 'm8-rq005-seal-helper-20260928'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout helper branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+          path: helper
+
+      - name: Checkout private state repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.PRIVATE_REPO }}
+          ref: ${{ env.PRIVATE_BRANCH }}
+          token: ${{ secrets.M8_PRIVATE_REPO_PAT }}
+          fetch-depth: 0
+          path: private
+
+      - name: Load fixed FreeTSA trust material
+        env:
+          TSA_URL: ${{ secrets.M8_TSA_URL }}
+          TSA_CA_PEM_B64: ${{ secrets.M8_TSA_CA_PEM_B64 }}
+          TSA_SIGNER_PEM_B64: ${{ secrets.M8_TSA_SIGNER_PEM_B64 }}
+        run: |
+          set -euo pipefail
+          test "$TSA_URL" = "https://freetsa.org/tsr"
+          printf '%s' "$TSA_CA_PEM_B64" | base64 -d > /tmp/tsa_ca.pem
+          printf '%s' "$TSA_SIGNER_PEM_B64" | base64 -d > /tmp/tsa_signer.pem
+          test "$(sha256sum /tmp/tsa_ca.pem | awk '{print $1}')" = "2151b61137ffa86bf664691ba67e7da0b19f98c758e3d228d5d8ebf27e044438"
+          test "$(sha256sum /tmp/tsa_signer.pem | awk '{print $1}')" = "8bfb0305bb64e2571ca507552ef3245cb1c2fee8728e0ff8689225081ea13467"
+
+      - name: Verify exact audited research bytes and full GTB chain
+        run: |
+          set -euo pipefail
+          test "$(sha256sum private/research/rq005/RQ005_FAMILY2_PREREG_FINAL_APPROVED.md | awk '{print $1}')" = "$PREREG_SHA"
+          test "$(sha256sum private/research/rq005/rq005_longterm_quota.py | awk '{print $1}')" = "$CODE_SHA"
+          test "$(sha256sum private/select_v2.py | awk '{print $1}')" = "$BASELINE_SHA"
+          test "$(sha256sum private/research/rq005/GTB_LEDGER_FULL_CHAIN_VALIDATION_20260928.json | awk '{print $1}')" = "$LEDGER_VALIDATION_SHA"
+          test "$(sha256sum private/research/rq005/RQ005_FAMILY2_CANDIDATE_SELECTION_RECORD.md | awk '{print $1}')" = "$CANDIDATE_SELECTION_SHA"
+          python - <<'PY'
+          import json,hashlib,pathlib
+          p=pathlib.Path('private/research/testing_budget_ledger.jsonl')
+          lines=[x for x in p.read_text(encoding='utf-8').splitlines() if x.strip()]
+          rows=[json.loads(x) for x in lines]
+          def h(o):
+              d=dict(o); d.pop('event_sha256',None)
+              b=json.dumps(d,ensure_ascii=False,sort_keys=True,separators=(',',':')).encode()
+              return hashlib.sha256(b).hexdigest()
+          for i,o in enumerate(rows):
+              if i==0:
+                  assert o['previous_event_sha256']=='GENESIS'
+              else:
+                  assert o['previous_event_sha256']==rows[i-1]['event_sha256'], (i,'prev')
+          bad=[]
+          for i,(line,o) in enumerate(zip(lines,rows)):
+              rh=h(o)
+              if rh!=o['event_sha256']:
+                  bad.append((i,o['event_sha256'],rh,hashlib.sha256(line.encode()).hexdigest()))
+          expected_claimed={
+            '8ff7fcd297e699892472eed63ad6dde36f9c1354b515e36c1860d6d9e91ee2b6',
+            '6fdde6b0ad4f2f726ffb64d13af53dd011fc5098111dc86c963f9ccfce4c1255'}
+          assert {x[1] for x in bad}==expected_claimed, bad
+          corr=next(o for o in rows if o.get('event_type')=='INTEGRITY_CORRECTION')
+          amap={x['claimed_event_sha256']:x for x in corr['affected_events']}
+          for _,claimed,recomp,raw in bad:
+              a=amap[claimed]
+              assert a['recomputed_event_sha256']==recomp
+              assert a['raw_line_sha256']==raw
+          assert rows[-1]['event_sha256'] in {
+            '893f8065eeb470c78232625415e91a5c9e2665b3cc6aa6a0427f6675896b53b3',
+            'cf611a2e5c7c62376786b79fa176c8059e5d54699cb9d8bcb6bdfebaee2ccfd0'}
+          print('GTB_FULL_CHAIN_PASS_WITH_DOCUMENTED_APPEND_ONLY_CORRECTION')
+          PY
+
+      - name: Append pre-RQ005 m_diag=10 carry-forward event
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,hashlib,pathlib
+          p=pathlib.Path('private/research/testing_budget_ledger.jsonl')
+          lines=[x for x in p.read_text(encoding='utf-8').splitlines() if x.strip()]
+          rows=[json.loads(x) for x in lines]
+          head=rows[-1]['event_sha256']
+          if head=='cf611a2e5c7c62376786b79fa176c8059e5d54699cb9d8bcb6bdfebaee2ccfd0':
+              print('carry-forward event already present; idempotent skip')
+              raise SystemExit(0)
+          assert head=='893f8065eeb470c78232625415e91a5c9e2665b3cc6aa6a0427f6675896b53b3'
+          o={
+            'schema':'M8_GLOBAL_TESTING_BUDGET_LEDGER_EVENT_V1',
+            'event_type':'DIAGNOSTIC',
+            'epoch':'M8_GTB_EPOCH_20260927',
+            'diagnostic_id':'PREEXISTING_11W_OUTCOME_EXPOSURE_BOUND_10',
+            'status':'RETROSPECTIVE_BOUND_RECORDED_BEFORE_RQ005_SEAL',
+            'previous_event_sha256':head,
+            'hash_preimage_rule':'SHA256_UTF8_CANONICAL_JSON_SORT_KEYS_NO_SPACES_EXCLUDING_event_sha256',
+            'advancement_allowed':'NO',
+            'historical_confirmatory_credit':0,
+            'm_diag':10,
+            'm_diag_bound_type':'CLAUDE_PREAPPROVED_CONSERVATIVE_BOUND',
+            'hypotheses_exposed':[
+              'game-layer 11w+ 1~2 deviation approx 30.69%',
+              '11w+ same-week pair co-placement WATCH',
+              '11~13w Expansion cap=1 test',
+              'exact-W bin chi-square test',
+              'winners >=5 from 1~10w distribution check',
+              'residual-bucket next-round rate 11~15w',
+              'residual-bucket next-round rate 16~20w',
+              'residual-bucket next-round rate 21~30w',
+              'residual-bucket next-round rate 31~45w',
+              'residual-bucket next-round rate 46+w'],
+            'rq005_carryforward_rule':'Holm over 13 hypotheses: 3 RQ005 primary comparisons plus 10 carry-forward hypotheses each assigned p=1, at exact family alpha 1/120.',
+            'family_index_consumed':False,
+            'alpha_consumed':'0/1',
+            'next_family_index':2,
+            'next_family_alpha':'1/120',
+            'recorded_at_kst':'2026-09-28T08:22:00+09:00'}
+          d=dict(o)
+          b=json.dumps(d,ensure_ascii=False,sort_keys=True,separators=(',',':')).encode()
+          o['event_sha256']=hashlib.sha256(b).hexdigest()
+          assert o['event_sha256']=='cf611a2e5c7c62376786b79fa176c8059e5d54699cb9d8bcb6bdfebaee2ccfd0'
+          with p.open('a',encoding='utf-8') as f:
+              f.write(json.dumps(o,ensure_ascii=False,sort_keys=True,separators=(',',':'))+'\n')
+          PY
+          cd private
+          if ! git diff --quiet -- research/testing_budget_ledger.jsonl; then
+            git config user.name 'm8-rq005-seal-bot'
+            git config user.email 'm8-rq005-seal-bot@users.noreply.github.com'
+            git add research/testing_budget_ledger.jsonl
+            git commit -m 'Record RQ005 pre-seal m_diag=10 carry-forward'
+            git push origin HEAD:${PRIVATE_BRANCH}
+          fi
+
+      - name: Verify seal master and timestamp query
+        run: |
+          set -euo pipefail
+          master='helper/rq005-seal-input/M8_RQ005_FAMILY2_PREREG_SEAL_MASTER_V1.json'
+          b64='helper/rq005-seal-input/M8_RQ005_FAMILY2_PREREG_SEAL_MASTER_V1.tsq.b64'
+          base64 -d "$b64" > /tmp/rq005.tsq
+          test "$(sha256sum "$master" | awk '{print $1}')" = "$MASTER_SHA"
+          test "$(sha256sum /tmp/rq005.tsq | awk '{print $1}')" = "$TSQ_SHA"
+          openssl ts -query -in /tmp/rq005.tsq -text > /tmp/query.txt
+          grep -q 'Nonce: 0x32F42F1A683301B2' /tmp/query.txt
+          grep -q 'Certificate required: yes' /tmp/query.txt
+
+      - name: Obtain and verify RFC3161 receipt
+        env:
+          TSA_URL: ${{ secrets.M8_TSA_URL }}
+        run: |
+          set -euo pipefail
+          mkdir -p rq005-seal-output
+          tsr='rq005-seal-output/M8_RQ005_FAMILY2_PREREG_SEAL_MASTER_V1.tsr'
+          curl --fail --silent --show-error \
+            -H 'Content-Type: application/timestamp-query' \
+            -H 'Accept: application/timestamp-reply' \
+            --data-binary '@/tmp/rq005.tsq' "$TSA_URL" -o "$tsr"
+          openssl ts -verify -queryfile /tmp/rq005.tsq -in "$tsr" -CAfile /tmp/tsa_ca.pem -untrusted /tmp/tsa_signer.pem
+          openssl ts -reply -in "$tsr" -text > /tmp/reply.txt
+          grep -q 'Status: Granted' /tmp/reply.txt
+          grep -q 'Nonce: 0x32F42F1A683301B2' /tmp/reply.txt
+          cp helper/rq005-seal-input/M8_RQ005_FAMILY2_PREREG_SEAL_MASTER_V1.json rq005-seal-output/
+          cp /tmp/rq005.tsq rq005-seal-output/M8_RQ005_FAMILY2_PREREG_SEAL_MASTER_V1.tsq
+          base64 -w0 "$tsr" > rq005-seal-output/M8_RQ005_FAMILY2_PREREG_SEAL_MASTER_V1.tsr.b64
+          printf '\n' >> rq005-seal-output/M8_RQ005_FAMILY2_PREREG_SEAL_MASTER_V1.tsr.b64
+          {
+            echo "MASTER_SHA256=$MASTER_SHA"
+            echo "TSQ_SHA256=$TSQ_SHA"
+            echo "TSR_SHA256=$(sha256sum "$tsr" | awk '{print $1}')"
+            grep '^Time stamp:' /tmp/reply.txt || true
+            grep '^Nonce:' /tmp/reply.txt || true
+          } > rq005-seal-output/M8_RQ005_FAMILY2_PREREG_SEAL_MASTER_V1.receipt_meta.txt
+
+      - name: Upload verified RQ005 seal receipt
+        id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: m8-rq005-family2-seal-receipt
+          path: rq005-seal-output/
+          if-no-files-found: error
+
+      - name: Append Family2 seal event, queue record, evidence, and current-state
+        env:
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+        run: |
+          set -euo pipefail
+          git -C private fetch origin main
+          git -C private reset --hard origin/main
+          python - <<'PY'
+          import json,hashlib,pathlib,os,re,datetime,shutil
+          root=pathlib.Path('private')
+          ledger=root/'research/testing_budget_ledger.jsonl'
+          lines=[x for x in ledger.read_text(encoding='utf-8').splitlines() if x.strip()]
+          rows=[json.loads(x) for x in lines]
+          if any(o.get('event_type')=='FAMILY_PREREGISTRATION_SEAL' and o.get('family_index')==2 for o in rows):
+              raise SystemExit('Family2 seal already exists; refusing duplicate')
+          assert rows[-1]['event_sha256']=='cf611a2e5c7c62376786b79fa176c8059e5d54699cb9d8bcb6bdfebaee2ccfd0'
+          tsr=pathlib.Path('rq005-seal-output/M8_RQ005_FAMILY2_PREREG_SEAL_MASTER_V1.tsr')
+          tsr_sha=hashlib.sha256(tsr.read_bytes()).hexdigest()
+          reply=pathlib.Path('/tmp/reply.txt').read_text()
+          m=re.search(r'^Time stamp:\s*(.+?)\s*$',reply,re.M)
+          assert m
+          dt=datetime.datetime.strptime(m.group(1),'%b %d %H:%M:%S %Y GMT').replace(tzinfo=datetime.timezone.utc)
+          gentime=dt.isoformat().replace('+00:00','Z')
+          digest=os.environ['ARTIFACT_DIGEST']
+          if digest.startswith('sha256:'): digest=digest.split(':',1)[1]
+          o={
+            'schema':'M8_GLOBAL_TESTING_BUDGET_LEDGER_EVENT_V1',
+            'event_type':'FAMILY_PREREGISTRATION_SEAL',
+            'epoch':'M8_GTB_EPOCH_20260927',
+            'sequence':2,
+            'family_index':2,
+            'research_id':'RQ005_CORE11W_QUOTA_FACTORIAL_V1_20260928',
+            'status':'SEALED_EXECUTION_AUTHORIZED',
+            'previous_event_sha256':rows[-1]['event_sha256'],
+            'hash_preimage_rule':'SHA256_UTF8_CANONICAL_JSON_SORT_KEYS_NO_SPACES_EXCLUDING_event_sha256',
+            'alpha_global':'1/20','alpha_j':'1/120','alpha_state':'SPENT_PVALUE',
+            'allocated_alpha_total':'1/30','remaining_alpha_bound':'1/60',
+            'next_family_index':3,'next_family_alpha':'1/240',
+            'primary_comparisons':3,'carryforward_hypotheses':10,'holm_hypotheses_total':13,
+            'carryforward_assigned_p':'1','raw_p_smallest_step_threshold':'1/1560',
+            'prereg_sha256':'ad5760eebebbede978d2a4aa14415fee6fb30fd2c44e106699dba9223c9b1db7',
+            'research_code_sha256':'2f332acb4037ddeb5e6a8254b0db36ed9582522942eb4a6ea75997c47536eae8',
+            'production_baseline_sha256':'bfee66330de2645801c5fffbee885ec79a0d39980dc8d81d79f68a1bf3dd819b',
+            'gtb_full_chain_validation_sha256':'919c4a56d0ce5553460fc279de80021b80dfaf7b9ee02c93e2683a5fd8cd252e',
+            'seal_master_sha256':'98700ac05e7e6052901454d12b49f1128fbe4d419ee3d4e6ba577d47ebca192b',
+            'seal_tsq_sha256':'b411b0f76811574b58e840ff4f1986fb1ae3739d3bcb2a332c16f26392cdf3bf',
+            'seal_tsr_sha256':tsr_sha,'seal_gentime_utc':gentime,
+            'seal_artifact_id':int(os.environ['ARTIFACT_ID']),
+            'seal_artifact_digest_sha256':digest,
+            'seal_workflow_run_id':int(os.environ['GITHUB_RUN_ID']),
+            'claude_execution_after_seal':'YES','historical_confirmatory_credit':0,
+            'production_promotion':'NOT_GRANTED',
+            'recorded_at_kst':datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=9))).replace(microsecond=0).isoformat()}
+          d=dict(o)
+          b=json.dumps(d,ensure_ascii=False,sort_keys=True,separators=(',',':')).encode()
+          o['event_sha256']=hashlib.sha256(b).hexdigest()
+          with ledger.open('a',encoding='utf-8') as f:
+              f.write(json.dumps(o,ensure_ascii=False,sort_keys=True,separators=(',',':'))+'\n')
+          evdir=root/'research/rq005/seal'
+          evdir.mkdir(parents=True,exist_ok=True)
+          shutil.copy2('helper/rq005-seal-input/M8_RQ005_FAMILY2_PREREG_SEAL_MASTER_V1.json',evdir/'M8_RQ005_FAMILY2_PREREG_SEAL_MASTER_V1.json')
+          shutil.copy2('/tmp/rq005.tsq',evdir/'M8_RQ005_FAMILY2_PREREG_SEAL_MASTER_V1.tsq')
+          shutil.copy2(tsr,evdir/'M8_RQ005_FAMILY2_PREREG_SEAL_MASTER_V1.tsr')
+          (evdir/'RQ005_FAMILY2_SEAL_LEDGER_EVENT.json').write_text(json.dumps(o,ensure_ascii=False,sort_keys=True,separators=(',',':'))+'\n',encoding='utf-8')
+          q=root/'research/research_queue_v1.jsonl'
+          qrows=[json.loads(x) for x in q.read_text(encoding='utf-8').splitlines() if x.strip()]
+          assert not any(x.get('queue_id')=='RQ-005' for x in qrows)
+          qe={'queue_id':'RQ-005','family':'CORE11W_QUOTA_FACTORIAL_V1','status':'SEALED_EXECUTION_AUTHORIZED','gtb_epoch':'M8_GTB_EPOCH_20260927','family_index':2,'alpha':'1/120','variants':['L00','L01','L02','L03'],'holm_hypotheses_total':13,'carryforward_hypotheses':10,'primary_window':'300-1242','execution':'AUTHORIZED_AFTER_EXTERNAL_SEAL','seal_event_sha256':o['event_sha256'],'production_changed':False,'confirmatory_credit':0}
+          with q.open('a',encoding='utf-8') as f: f.write(json.dumps(qe,ensure_ascii=False,separators=(',',':'))+'\n')
+          state={'schema':'M8_CURRENT_STATE_RQ005_SEALED_EXECUTION_AUTHORIZED_V1','status':'AUTHORITATIVE_CURRENT_STATE','production_predictive_semantics':'M7_UNIFIED10_V4_PARETO_ACTIVE','method_repro':'30502b98a6aec332ff3ccfbbd203467e9f25afd3fe61e2c5e0b3f014fedf4803','static19_whole19':'fe5cf6ef00bc38d80adab7a42948d3572b49452b57deaca45b9244a9eb14f2d3','l0':'CLOSED','error_first_open_blockers':[],'gtb':{'policy_status':'ACTIVE','epoch':'M8_GTB_EPOCH_20260927','ledger_head_sha256':o['event_sha256'],'family_1_status':'RQ004_CLOSED_NO_ADVANCEMENT','family_2':{'research_id':'RQ005_CORE11W_QUOTA_FACTORIAL_V1_20260928','status':'SEALED_EXECUTION_AUTHORIZED','alpha_j':'1/120','holm_hypotheses_total':13,'carryforward_hypotheses':10,'seal_master_sha256':o['seal_master_sha256'],'seal_tsr_sha256':o['seal_tsr_sha256'],'seal_gentime_utc':o['seal_gentime_utc']}},'historical_confirmatory_credit':0,'production_changed':False,'next_gate':'EXECUTE_RQ005_SEALED_943_ROUND_WF'}
+          sdir=root/'current_state'; sdir.mkdir(exist_ok=True)
+          (sdir/'M8_CURRENT_STATE_RQ005_SEALED_EXECUTION_AUTHORIZED_V1.json').write_text(json.dumps(state,ensure_ascii=False,sort_keys=True,separators=(',',':'))+'\n',encoding='utf-8')
+          print('SEAL_EVENT_SHA256='+o['event_sha256'])
+          print('TSR_SHA256='+tsr_sha)
+          print('GENTIME='+gentime)
+          PY
+          cd private
+          git config user.name 'm8-rq005-seal-bot'
+          git config user.email 'm8-rq005-seal-bot@users.noreply.github.com'
+          git add research/testing_budget_ledger.jsonl research/research_queue_v1.jsonl research/rq005/seal current_state/M8_CURRENT_STATE_RQ005_SEALED_EXECUTION_AUTHORIZED_V1.json
+          git commit -m 'Seal RQ005 Family2 and authorize execution'
+          git push origin HEAD:${PRIVATE_BRANCH}
