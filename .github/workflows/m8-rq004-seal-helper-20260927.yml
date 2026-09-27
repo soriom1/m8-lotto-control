@@ -1,0 +1,71 @@
+name: M8 RQ004 Family1 Seal Helper 20260927
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  rq004_seal:
+    if: github.event_name == 'pull_request' && github.head_ref == 'm8-rq004-seal-helper-20260927'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout helper branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+
+      - name: Obtain and verify RFC3161 receipt
+        env:
+          TSA_URL: ${{ secrets.M8_TSA_URL }}
+          TSA_CA_PEM_B64: ${{ secrets.M8_TSA_CA_PEM_B64 }}
+          TSA_SIGNER_PEM_B64: ${{ secrets.M8_TSA_SIGNER_PEM_B64 }}
+        run: |
+          set -euo pipefail
+          test "$TSA_URL" = "https://freetsa.org/tsr"
+          printf '%s' "$TSA_CA_PEM_B64" | base64 -d > /tmp/tsa_ca.pem
+          printf '%s' "$TSA_SIGNER_PEM_B64" | base64 -d > /tmp/tsa_signer.pem
+          test "$(sha256sum /tmp/tsa_ca.pem | awk '{print $1}')" = "2151b61137ffa86bf664691ba67e7da0b19f98c758e3d228d5d8ebf27e044438"
+          test "$(sha256sum /tmp/tsa_signer.pem | awk '{print $1}')" = "8bfb0305bb64e2571ca507552ef3245cb1c2fee8728e0ff8689225081ea13467"
+
+          mkdir -p rq004-seal-output
+          master="rq004-seal-input/M8_RQ004_FAMILY1_PREREG_SEAL_MASTER_V1.json"
+          b64="rq004-seal-input/M8_RQ004_FAMILY1_PREREG_SEAL_MASTER_V1.tsq.b64"
+          tsq="/tmp/rq004.tsq"
+          tsr="rq004-seal-output/M8_RQ004_FAMILY1_PREREG_SEAL_MASTER_V1.tsr"
+
+          base64 -d "$b64" > "$tsq"
+          test "$(sha256sum "$master" | awk '{print $1}')" = "a6f23d978b6a03f92057815c3b23307e5050e5b824fe6758c267b0c3c501f905"
+          test "$(sha256sum "$tsq" | awk '{print $1}')" = "936d2c61111cfb41d8aa25808afe670181da13b2921ea73505e33ce63b2b0369"
+          openssl ts -query -in "$tsq" -text > /tmp/query.txt
+          grep -q 'Nonce: 0x4727F00614D59274' /tmp/query.txt
+          grep -q 'Certificate required: yes' /tmp/query.txt
+
+          curl --fail --silent --show-error \
+            -H 'Content-Type: application/timestamp-query' \
+            -H 'Accept: application/timestamp-reply' \
+            --data-binary "@$tsq" "$TSA_URL" -o "$tsr"
+
+          openssl ts -verify -queryfile "$tsq" -in "$tsr" -CAfile /tmp/tsa_ca.pem -untrusted /tmp/tsa_signer.pem
+          openssl ts -reply -in "$tsr" -text > /tmp/reply.txt
+          grep -q 'Status: Granted' /tmp/reply.txt
+          grep -q 'Nonce: 0x4727F00614D59274' /tmp/reply.txt
+          base64 -w0 "$tsr" > rq004-seal-output/M8_RQ004_FAMILY1_PREREG_SEAL_MASTER_V1.tsr.b64
+          printf '\n' >> rq004-seal-output/M8_RQ004_FAMILY1_PREREG_SEAL_MASTER_V1.tsr.b64
+          {
+            echo 'MASTER_SHA256=a6f23d978b6a03f92057815c3b23307e5050e5b824fe6758c267b0c3c501f905'
+            echo 'TSQ_SHA256=936d2c61111cfb41d8aa25808afe670181da13b2921ea73505e33ce63b2b0369'
+            echo "TSR_SHA256=$(sha256sum "$tsr" | awk '{print $1}')"
+            grep '^Time stamp:' /tmp/reply.txt || true
+            grep '^Nonce:' /tmp/reply.txt || true
+          } > rq004-seal-output/M8_RQ004_FAMILY1_PREREG_SEAL_MASTER_V1.receipt_meta.txt
+
+      - name: Upload verified receipt
+        uses: actions/upload-artifact@v4
+        with:
+          name: m8-rq004-family1-seal-receipt
+          path: rq004-seal-output/
+          if-no-files-found: error
