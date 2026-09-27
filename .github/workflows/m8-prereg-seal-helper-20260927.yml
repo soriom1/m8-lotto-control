@@ -1,0 +1,100 @@
+name: M8 Prereg Seal Helper 20260927
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  prereg_seal_helper:
+    if: github.event_name == 'pull_request' && github.head_ref == 'm8-prereg-seal-helper-20260927'
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout helper branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+
+      - name: Load pinned FreeTSA trust material
+        env:
+          TSA_URL: ${{ secrets.M8_TSA_URL }}
+          TSA_CA_PEM_B64: ${{ secrets.M8_TSA_CA_PEM_B64 }}
+          TSA_SIGNER_PEM_B64: ${{ secrets.M8_TSA_SIGNER_PEM_B64 }}
+        run: |
+          set -euo pipefail
+          test "$TSA_URL" = "https://freetsa.org/tsr"
+          test -n "$TSA_CA_PEM_B64" && test -n "$TSA_SIGNER_PEM_B64"
+          printf '%s' "$TSA_CA_PEM_B64" | base64 -d > /tmp/tsa_ca.pem
+          printf '%s' "$TSA_SIGNER_PEM_B64" | base64 -d > /tmp/tsa_signer.pem
+          test "$(sha256sum /tmp/tsa_ca.pem | awk '{print $1}')" = "2151b61137ffa86bf664691ba67e7da0b19f98c758e3d228d5d8ebf27e044438"
+          test "$(sha256sum /tmp/tsa_signer.pem | awk '{print $1}')" = "8bfb0305bb64e2571ca507552ef3245cb1c2fee8728e0ff8689225081ea13467"
+
+      - name: Obtain and verify both RFC3161 receipts
+        env:
+          TSA_URL: ${{ secrets.M8_TSA_URL }}
+        run: |
+          set -euo pipefail
+          mkdir -p prereg-seal-output
+
+          seal_one() {
+            name="$1"
+            expected_master="$2"
+            expected_tsq="$3"
+            expected_nonce="$4"
+            master="prereg-seal-input/${name}.json"
+            b64="prereg-seal-input/${name}.tsq.b64"
+            tsq="/tmp/${name}.tsq"
+            tsr="prereg-seal-output/${name}.tsr"
+            outb64="prereg-seal-output/${name}.tsr.b64"
+            meta="prereg-seal-output/${name}.receipt_meta.txt"
+
+            base64 -d "$b64" > "$tsq"
+            test "$(sha256sum "$master" | awk '{print $1}')" = "$expected_master"
+            test "$(sha256sum "$tsq" | awk '{print $1}')" = "$expected_tsq"
+            openssl ts -query -in "$tsq" -text > "/tmp/${name}.query.txt"
+            grep -q "Nonce: ${expected_nonce}" "/tmp/${name}.query.txt"
+            grep -q 'Certificate required: yes' "/tmp/${name}.query.txt"
+
+            curl --fail --silent --show-error \
+              -H 'Content-Type: application/timestamp-query' \
+              -H 'Accept: application/timestamp-reply' \
+              --data-binary "@$tsq" "$TSA_URL" -o "$tsr"
+
+            openssl ts -verify -queryfile "$tsq" -in "$tsr" -CAfile /tmp/tsa_ca.pem -untrusted /tmp/tsa_signer.pem
+            openssl ts -reply -in "$tsr" -text > "/tmp/${name}.reply.txt"
+            grep -q 'Status: Granted' "/tmp/${name}.reply.txt"
+            grep -q "Nonce: ${expected_nonce}" "/tmp/${name}.reply.txt"
+            base64 -w0 "$tsr" > "$outb64"
+            printf '\n' >> "$outb64"
+            {
+              echo "MASTER_SHA256=$expected_master"
+              echo "TSQ_SHA256=$expected_tsq"
+              echo "TSR_SHA256=$(sha256sum "$tsr" | awk '{print $1}')"
+              grep '^Time stamp:' "/tmp/${name}.reply.txt" || true
+              grep '^Nonce:' "/tmp/${name}.reply.txt" || true
+            } > "$meta"
+          }
+
+          seal_one M8_METHOD_AB_PREREG_SEAL_MASTER_V1 \
+            6c9ec3fcf57da328433f692e73739acc83b473ce6351419807afd90d699364a2 \
+            d2c5131fb0d2cde98ebde3a380491fce1a0a87794d927fffdb715532ed9bb334 \
+            0x1E7573A0BADAC15F
+
+          seal_one M8_PURCHASE_4PLUS_PREREG_SEAL_MASTER_V1 \
+            4aa30d3306de318b6763f00b2897e4203d5ec8f4bb5294c30c6335630f73d4e9 \
+            d8d05c6c5c01f73259fff4a571f8b0108b7176c00b36d7b2943535410f6363bb \
+            0x549E88B464761CA3
+
+      - name: Persist verified prereg receipts on helper branch
+        run: |
+          set -euo pipefail
+          git config user.name 'm8-prereg-seal-bot'
+          git config user.email 'm8-prereg-seal-bot@users.noreply.github.com'
+          git add prereg-seal-output
+          git commit -m 'Store A/B and purchase prereg RFC3161 receipts'
+          git push origin HEAD:${{ github.head_ref }}
