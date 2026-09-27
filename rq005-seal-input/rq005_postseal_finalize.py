@@ -82,15 +82,18 @@ shutil.copy2(tsr, evdir/'M8_RQ005_FAMILY2_PREREG_SEAL_MASTER_V1.tsr')
 
 queue = ROOT/'research/research_queue_v1.jsonl'
 qrows = [json.loads(x) for x in queue.read_text(encoding='utf-8').splitlines() if x.strip()]
-assert not any(x.get('queue_id') == 'RQ-005' for x in qrows)
-qe = {
+matches = [i for i, x in enumerate(qrows) if x.get('queue_id') == 'RQ-005']
+assert len(matches) == 1, matches
+idx = matches[0]
+assert qrows[idx].get('status') == 'PROPOSED_AWAITING_CLAUDE_AUDIT_NOT_SEALED_NOT_EXECUTED'
+qrows[idx] = {
     'queue_id':'RQ-005','family':'CORE11W_QUOTA_FACTORIAL_V1','status':'SEALED_EXECUTION_AUTHORIZED',
     'gtb_epoch':'M8_GTB_EPOCH_20260927','family_index':2,'alpha':'1/120',
     'variants':['L00','L01','L02','L03'],'holm_hypotheses_total':13,'carryforward_hypotheses':10,
     'primary_window':'300-1242','execution':'AUTHORIZED_AFTER_EXTERNAL_SEAL',
-    'seal_event_sha256':o['event_sha256'],'production_changed':False,'confirmatory_credit':0}
-with queue.open('a', encoding='utf-8') as f:
-    f.write(json.dumps(qe, ensure_ascii=False, separators=(',', ':')) + '\n')
+    'seal_event_sha256':o['event_sha256'],'seal_master_sha256':MASTER_SHA,'seal_tsr_sha256':tsr_sha,
+    'production_changed':False,'confirmatory_credit':0}
+queue.write_text('\n'.join(json.dumps(x, ensure_ascii=False, separators=(',', ':')) for x in qrows) + '\n', encoding='utf-8')
 
 state = {
     'schema':'M8_CURRENT_STATE_RQ005_SEALED_EXECUTION_AUTHORIZED_V1',
