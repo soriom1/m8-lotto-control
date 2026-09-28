@@ -1,0 +1,207 @@
+name: M8 RQ006 Family3 Seal Helper 20260928
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  PRIVATE_REPO: soriom1/m8-lotto
+  PRIVATE_BRANCH: main
+  PRE_HEAD: 223654fc7ff3fff981712fe3d562518a8d96e422d352ff5bda86ffec3e524a6f
+  PREREG_SHA: 31687761283f9c81859d40c1847c7cfa68505a6794293fcda6c7f9b23af57484
+  RESEARCH_CODE_SHA: d5a8f1e30442188a41c353a755a965bf878c4c3a0bba3d9d0680a1bc4f777ff8
+  EXECUTION_CODE_SHA: 81f50f81b5974b281689162bc743f442a08ff7887df92994b6b2cb1c483ad1ce
+  HISTORY_SHA: b9bfbb4983a5d3ad7401e731c1952df6dc3b8726fc4f467dde8b3803efafe1a0
+  BASELINE_SHA: bfee66330de2645801c5fffbee885ec79a0d39980dc8d81d79f68a1bf3dd819b
+  GPT_AUDIT_SHA: 1b5df524c9f4f267c39ec6d3be43481c5905d3293ce1c24a4986099de0b052df
+  GPT_POLICY_SHA: 7eb46a330f475689ed641eeb433ce3432c5de3657703756db615d3c772a2d126
+
+jobs:
+  rq006_seal:
+    if: github.event_name == 'pull_request' && github.head_ref == 'm8-rq006-seal-helper-20260928'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout helper branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+          path: helper
+
+      - name: Checkout private state repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.PRIVATE_REPO }}
+          ref: ${{ env.PRIVATE_BRANCH }}
+          token: ${{ secrets.M8_PRIVATE_REPO_PAT }}
+          fetch-depth: 0
+          path: private
+
+      - name: Load fixed FreeTSA trust material
+        env:
+          TSA_URL: ${{ secrets.M8_TSA_URL }}
+          TSA_CA_PEM_B64: ${{ secrets.M8_TSA_CA_PEM_B64 }}
+          TSA_SIGNER_PEM_B64: ${{ secrets.M8_TSA_SIGNER_PEM_B64 }}
+        run: |
+          set -euo pipefail
+          test "$TSA_URL" = "https://freetsa.org/tsr"
+          printf '%s' "$TSA_CA_PEM_B64" | base64 -d > /tmp/tsa_ca.pem
+          printf '%s' "$TSA_SIGNER_PEM_B64" | base64 -d > /tmp/tsa_signer.pem
+          test "$(sha256sum /tmp/tsa_ca.pem | awk '{print $1}')" = "2151b61137ffa86bf664691ba67e7da0b19f98c758e3d228d5d8ebf27e044438"
+          test "$(sha256sum /tmp/tsa_signer.pem | awk '{print $1}')" = "8bfb0305bb64e2571ca507552ef3245cb1c2fee8728e0ff8689225081ea13467"
+
+      - name: Validate full GTB chain and append preapproved m_diag=37
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+          import json, hashlib, pathlib, datetime, os
+          ROOT=pathlib.Path('private')
+          PRE_HEAD=os.environ['PRE_HEAD']
+          def canonical_hash(o):
+              d=dict(o); d.pop('event_sha256',None)
+              return hashlib.sha256(json.dumps(d,ensure_ascii=False,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+          ledger=ROOT/'research/testing_budget_ledger.jsonl'
+          lines=[x for x in ledger.read_text(encoding='utf-8').splitlines() if x.strip()]
+          rows=[json.loads(x) for x in lines]
+          assert rows[0]['previous_event_sha256']=='GENESIS'
+          for i in range(1,len(rows)):
+              assert rows[i]['previous_event_sha256']==rows[i-1]['event_sha256'], (i,'prev_link')
+          bad=[]
+          for i,(line,o) in enumerate(zip(lines,rows)):
+              recomputed=canonical_hash(o)
+              if recomputed!=o['event_sha256']:
+                  bad.append({'index':i,'claimed':o['event_sha256'],'recomputed':recomputed,'raw_line_sha256':hashlib.sha256(line.encode()).hexdigest()})
+          expected={'8ff7fcd297e699892472eed63ad6dde36f9c1354b515e36c1860d6d9e91ee2b6','6fdde6b0ad4f2f726ffb64d13af53dd011fc5098111dc86c963f9ccfce4c1255'}
+          assert {x['claimed'] for x in bad}==expected, bad
+          corr=next(o for o in rows if o.get('event_type')=='INTEGRITY_CORRECTION')
+          amap={x['claimed_event_sha256']:x for x in corr['affected_events']}
+          for x in bad:
+              assert amap[x['claimed']]['recomputed_event_sha256']==x['recomputed']
+              assert amap[x['claimed']]['raw_line_sha256']==x['raw_line_sha256']
+          st=json.loads((ROOT/'current_state/M8_CURRENT_STATE_GPT_ONLY_AUDIT_RQ006_PRESEAL_V2.json').read_text(encoding='utf-8'))
+          assert st['l0']=='CLOSED'
+          assert st['error_first_open_blockers']==[]
+          assert st['gtb']['next_family_index']==3 and st['gtb']['next_family_alpha']=='1/240'
+          assert st['gtb']['ledger_head_sha256']==PRE_HEAD
+          assert st['audit_authority']['policy_sha256']==os.environ['GPT_POLICY_SHA']
+          policy=ROOT/'research/policies/M8_GPT_ONLY_AUDIT_FALLBACK_POLICY_V1_20260928.md'
+          assert hashlib.sha256(policy.read_bytes()).hexdigest()==os.environ['GPT_POLICY_SHA']
+
+          diag_id='PREEXISTING_LONG_RESIDUAL_OUTCOME_EXPOSURE_BOUND_37'
+          existing=[o for o in rows if o.get('diagnostic_id')==diag_id]
+          if existing:
+              assert len(existing)==1
+              diag=existing[0]
+              assert diag['m_diag']==37
+              assert diag['previous_event_sha256']==PRE_HEAD
+              assert rows[-1]['event_sha256']==diag['event_sha256']
+          else:
+              assert rows[-1]['event_sha256']==PRE_HEAD, rows[-1]['event_sha256']
+              now=datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=9))).isoformat(timespec='seconds')
+              diag={'schema':'M8_GLOBAL_TESTING_BUDGET_LEDGER_EVENT_V1','event_type':'DIAGNOSTIC','epoch':'M8_GTB_EPOCH_20260927','diagnostic_id':diag_id,'status':'RETROSPECTIVE_BOUND_RECORDED_BEFORE_RQ006_SEAL','previous_event_sha256':PRE_HEAD,'hash_preimage_rule':'SHA256_UTF8_CANONICAL_JSON_SORT_KEYS_NO_SPACES_EXCLUDING_event_sha256','advancement_allowed':'NO','historical_confirmatory_credit':0,'m_diag':37,'m_diag_bound_type':'LAST_AVAILABLE_CLAUDE_PREAPPROVED_CONSERVATIVE_BOUND','carryforward_assigned_p':'1','rq006_carryforward_rule':'Holm over 40 hypotheses: 3 RQ006 primary comparisons plus 37 carry-forward hypotheses each fixed p=1, at exact family alpha 1/240.','family_index_consumed':False,'alpha_consumed':'0/1','next_family_index':3,'next_family_alpha':'1/240','recorded_at_kst':now}
+              diag['event_sha256']=canonical_hash(diag)
+              with ledger.open('a',encoding='utf-8') as f:
+                  f.write(json.dumps(diag,ensure_ascii=False,sort_keys=True,separators=(',',':'))+'\n')
+              rows.append(diag)
+
+          validation={'schema':'M8_GTB_FULL_CHAIN_VALIDATION_RQ006_PRESEAL_V1','status':'PASS_WITH_DOCUMENTED_APPEND_ONLY_CORRECTION','events':len(rows),'pre_rq006_head':PRE_HEAD,'post_carryforward_head':rows[-1]['event_sha256'],'self_hash_mismatches':bad,'correction_event_sha256':corr['event_sha256'],'previous_link_validation':'PASS','rq006_family_index':3,'rq006_family_alpha':'1/240','rq006_m_diag':37,'rq006_holm_total':40}
+          out=pathlib.Path('seal-work'); out.mkdir(exist_ok=True)
+          vp=out/'GTB_LEDGER_FULL_CHAIN_VALIDATION_RQ006_20260928.json'
+          vp.write_text(json.dumps(validation,ensure_ascii=False,sort_keys=True,separators=(',',':'))+'\n',encoding='utf-8')
+          print('GTB_CHAIN_PASS HEAD='+rows[-1]['event_sha256'])
+          PY
+          cd private
+          if ! git diff --quiet -- research/testing_budget_ledger.jsonl; then
+            git config user.name 'm8-rq006-seal-bot'
+            git config user.email 'm8-rq006-seal-bot@users.noreply.github.com'
+            git add research/testing_budget_ledger.jsonl
+            git commit -m 'Record RQ006 pre-seal m_diag=37 carry-forward'
+            git push origin HEAD:${PRIVATE_BRANCH}
+          fi
+
+      - name: Build exact seal master and timestamp query
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,hashlib,pathlib,os
+          v=json.loads(pathlib.Path('seal-work/GTB_LEDGER_FULL_CHAIN_VALIDATION_RQ006_20260928.json').read_text())
+          master={'schema':'M8_RQ006_FAMILY3_PREREG_SEAL_MASTER_V1','research_id':'RQ006_LONG20_REPRESENTATIVE_2X2_V1_20260928','family_index':3,'family_alpha':'1/240','primary_comparisons':3,'carryforward_hypotheses':37,'holm_hypotheses_total':40,'pre_rq006_gtb_head_sha256':os.environ['PRE_HEAD'],'post_carryforward_gtb_head_sha256':v['post_carryforward_head'],'prereg_sha256':os.environ['PREREG_SHA'],'research_code_sha256':os.environ['RESEARCH_CODE_SHA'],'execution_code_sha256':os.environ['EXECUTION_CODE_SHA'],'history_main_1_1242_sha256':os.environ['HISTORY_SHA'],'production_baseline_sha256':os.environ['BASELINE_SHA'],'gpt_two_pass_audit_sha256':os.environ['GPT_AUDIT_SHA'],'gpt_audit_fallback_policy_sha256':os.environ['GPT_POLICY_SHA'],'historical_confirmatory_credit':0,'production_promotion':'NOT_GRANTED_FROM_HISTORICAL_RESULT','execution_gate':'ONLY_AFTER_THIS_EXTERNAL_SEAL_IS_VERIFIED'}
+          p=pathlib.Path('seal-work/M8_RQ006_FAMILY3_PREREG_SEAL_MASTER_V1.json')
+          p.write_text(json.dumps(master,ensure_ascii=False,sort_keys=True,separators=(',',':'))+'\n',encoding='utf-8')
+          print('MASTER_SHA256='+hashlib.sha256(p.read_bytes()).hexdigest())
+          PY
+          openssl ts -query -data seal-work/M8_RQ006_FAMILY3_PREREG_SEAL_MASTER_V1.json -sha256 -cert -out seal-work/M8_RQ006_FAMILY3_PREREG_SEAL_MASTER_V1.tsq
+          openssl ts -query -in seal-work/M8_RQ006_FAMILY3_PREREG_SEAL_MASTER_V1.tsq -text > /tmp/rq006_query.txt
+          grep -q 'Certificate required: yes' /tmp/rq006_query.txt
+
+      - name: Obtain and verify RFC3161 receipt
+        env:
+          TSA_URL: ${{ secrets.M8_TSA_URL }}
+        run: |
+          set -euo pipefail
+          tsq='seal-work/M8_RQ006_FAMILY3_PREREG_SEAL_MASTER_V1.tsq'
+          tsr='seal-work/M8_RQ006_FAMILY3_PREREG_SEAL_MASTER_V1.tsr'
+          curl --fail --silent --show-error -H 'Content-Type: application/timestamp-query' -H 'Accept: application/timestamp-reply' --data-binary @"$tsq" "$TSA_URL" -o "$tsr"
+          openssl ts -verify -queryfile "$tsq" -in "$tsr" -CAfile /tmp/tsa_ca.pem -untrusted /tmp/tsa_signer.pem
+          openssl ts -reply -in "$tsr" -text > /tmp/rq006_reply.txt
+          grep -q 'Status: Granted' /tmp/rq006_reply.txt
+          base64 -w0 "$tsr" > seal-work/M8_RQ006_FAMILY3_PREREG_SEAL_MASTER_V1.tsr.b64
+          printf '\n' >> seal-work/M8_RQ006_FAMILY3_PREREG_SEAL_MASTER_V1.tsr.b64
+          { echo "MASTER_SHA256=$(sha256sum seal-work/M8_RQ006_FAMILY3_PREREG_SEAL_MASTER_V1.json | awk '{print $1}')"; echo "TSQ_SHA256=$(sha256sum "$tsq" | awk '{print $1}')"; echo "TSR_SHA256=$(sha256sum "$tsr" | awk '{print $1}')"; grep '^Time stamp:' /tmp/rq006_reply.txt || true; grep '^Nonce:' /tmp/rq006_reply.txt || true; } > seal-work/M8_RQ006_FAMILY3_PREREG_SEAL_MASTER_V1.receipt_meta.txt
+
+      - name: Upload verified RQ006 seal receipt
+        id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: m8-rq006-family3-seal-receipt
+          path: seal-work/
+          if-no-files-found: error
+
+      - name: Append Family3 seal event and authoritative state
+        env:
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+        run: |
+          set -euo pipefail
+          git -C private fetch origin main
+          git -C private reset --hard origin/main
+          python - <<'PY'
+          from __future__ import annotations
+          import json,hashlib,pathlib,datetime,os,shutil
+          ROOT=pathlib.Path('private'); OUT=pathlib.Path('seal-work')
+          def canonical_hash(o):
+              d=dict(o); d.pop('event_sha256',None)
+              return hashlib.sha256(json.dumps(d,ensure_ascii=False,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+          ledger=ROOT/'research/testing_budget_ledger.jsonl'
+          rows=[json.loads(x) for x in ledger.read_text(encoding='utf-8').splitlines() if x.strip()]
+          diag=rows[-1]
+          assert diag.get('diagnostic_id')=='PREEXISTING_LONG_RESIDUAL_OUTCOME_EXPOSURE_BOUND_37'
+          masterp=OUT/'M8_RQ006_FAMILY3_PREREG_SEAL_MASTER_V1.json'; tsqp=OUT/'M8_RQ006_FAMILY3_PREREG_SEAL_MASTER_V1.tsq'; tsrp=OUT/'M8_RQ006_FAMILY3_PREREG_SEAL_MASTER_V1.tsr'; valp=OUT/'GTB_LEDGER_FULL_CHAIN_VALIDATION_RQ006_20260928.json'
+          master=json.loads(masterp.read_text(encoding='utf-8'))
+          assert master['post_carryforward_gtb_head_sha256']==diag['event_sha256']
+          meta=(OUT/'M8_RQ006_FAMILY3_PREREG_SEAL_MASTER_V1.receipt_meta.txt').read_text(encoding='utf-8')
+          gentime=''
+          for line in meta.splitlines():
+              if line.startswith('Time stamp:'): gentime=line.split(':',1)[1].strip()
+          now=datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=9))).isoformat(timespec='seconds')
+          event={'schema':'M8_GLOBAL_TESTING_BUDGET_LEDGER_EVENT_V1','event_type':'FAMILY_PREREGISTRATION_SEAL','epoch':'M8_GTB_EPOCH_20260927','family_index':3,'sequence':3,'status':'SEALED_EXECUTION_AUTHORIZED','previous_event_sha256':diag['event_sha256'],'hash_preimage_rule':'SHA256_UTF8_CANONICAL_JSON_SORT_KEYS_NO_SPACES_EXCLUDING_event_sha256','alpha_global':'1/20','alpha_j':'1/240','alpha_state':'SPENT_PVALUE','allocated_alpha_total':'3/80','remaining_alpha_bound':'1/80','next_family_index':4,'next_family_alpha':'1/400','primary_comparisons':3,'carryforward_hypotheses':37,'carryforward_assigned_p':'1','holm_hypotheses_total':40,'raw_p_smallest_step_threshold':'1/9600','historical_confirmatory_credit':0,'research_id':'RQ006_LONG20_REPRESENTATIVE_2X2_V1_20260928','prereg_sha256':os.environ['PREREG_SHA'],'research_code_sha256':os.environ['RESEARCH_CODE_SHA'],'execution_code_sha256':os.environ['EXECUTION_CODE_SHA'],'history_sha256':os.environ['HISTORY_SHA'],'production_baseline_sha256':os.environ['BASELINE_SHA'],'gpt_two_pass_audit_sha256':os.environ['GPT_AUDIT_SHA'],'gpt_audit_policy_sha256':os.environ['GPT_POLICY_SHA'],'audit_authority':'GPT_TWO_PASS_SELF_AUDIT_BY_USER_EXPLICIT_OVERRIDE_NOT_INDEPENDENT_THIRD_PARTY','gtb_full_chain_validation_sha256':hashlib.sha256(valp.read_bytes()).hexdigest(),'seal_master_sha256':hashlib.sha256(masterp.read_bytes()).hexdigest(),'seal_tsq_sha256':hashlib.sha256(tsqp.read_bytes()).hexdigest(),'seal_tsr_sha256':hashlib.sha256(tsrp.read_bytes()).hexdigest(),'seal_gentime_text':gentime,'seal_workflow_run_id':int(os.environ['GITHUB_RUN_ID']),'seal_artifact_id':int(os.environ['ARTIFACT_ID']),'seal_artifact_digest_sha256':os.environ['ARTIFACT_DIGEST'].removeprefix('sha256:'),'production_promotion':'NOT_GRANTED','recorded_at_kst':now}
+          event['event_sha256']=canonical_hash(event)
+          with ledger.open('a',encoding='utf-8') as f: f.write(json.dumps(event,ensure_ascii=False,sort_keys=True,separators=(',',':'))+'\n')
+          old=json.loads((ROOT/'current_state/M8_CURRENT_STATE_GPT_ONLY_AUDIT_RQ006_PRESEAL_V2.json').read_text(encoding='utf-8'))
+          old['schema']='M8_CURRENT_STATE_RQ006_SEALED_EXECUTION_AUTHORIZED_V1'; old['status']='AUTHORITATIVE_CURRENT_STATE'; old['gtb']['ledger_head_sha256']=event['event_sha256']; old['gtb']['allocated_alpha_total']='3/80'; old['gtb']['remaining_alpha_bound']='1/80'; old['gtb']['next_family_index']=4; old['gtb']['next_family_alpha']='1/400'; old['rq006']['status']='SEALED_EXECUTION_AUTHORIZED'; old['rq006']['seal_event_sha256']=event['event_sha256']; old['rq006']['seal_master_sha256']=event['seal_master_sha256']; old['rq006']['seal_tsq_sha256']=event['seal_tsq_sha256']; old['rq006']['seal_tsr_sha256']=event['seal_tsr_sha256']; old['rq006']['seal_workflow_run_id']=event['seal_workflow_run_id']; old['rq006']['seal_artifact_id']=event['seal_artifact_id']; old['next_gate']='RQ006_EXACT_POSTSEAL_EXECUTION_REQUIRED; PRODUCTION_UNCHANGED'
+          (ROOT/'current_state/M8_CURRENT_STATE_RQ006_SEALED_EXECUTION_AUTHORIZED_V1.json').write_text(json.dumps(old,ensure_ascii=False,sort_keys=True,separators=(',',':'))+'\n',encoding='utf-8')
+          sd=ROOT/'research/rq006/seal'; sd.mkdir(parents=True,exist_ok=True)
+          for name in ['GTB_LEDGER_FULL_CHAIN_VALIDATION_RQ006_20260928.json','M8_RQ006_FAMILY3_PREREG_SEAL_MASTER_V1.json','M8_RQ006_FAMILY3_PREREG_SEAL_MASTER_V1.tsq','M8_RQ006_FAMILY3_PREREG_SEAL_MASTER_V1.tsr.b64','M8_RQ006_FAMILY3_PREREG_SEAL_MASTER_V1.receipt_meta.txt']: shutil.copy2(OUT/name,sd/name)
+          print('RQ006_SEAL_EVENT_SHA='+event['event_sha256'])
+          PY
+          cd private
+          git config user.name 'm8-rq006-seal-bot'
+          git config user.email 'm8-rq006-seal-bot@users.noreply.github.com'
+          git add research/testing_budget_ledger.jsonl research/rq006/seal current_state/M8_CURRENT_STATE_RQ006_SEALED_EXECUTION_AUTHORIZED_V1.json
+          git commit -m 'Seal RQ006 Family3 and authorize exact execution'
+          git push origin HEAD:${PRIVATE_BRANCH}
