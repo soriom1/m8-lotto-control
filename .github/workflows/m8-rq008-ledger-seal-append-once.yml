@@ -1,0 +1,76 @@
+name: M8 RQ008 One-Shot Family4 Ledger Seal Append
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/m8-rq008-ledger-seal-append-once.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  append:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout private state repository
+        uses: actions/checkout@v4
+        with:
+          repository: soriom1/m8-lotto
+          ref: main
+          token: ${{ secrets.M8_PRIVATE_REPO_PAT }}
+          fetch-depth: 0
+          path: private
+
+      - name: Validate GTB chain and append RQ008 Family4 seal event
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,hashlib,pathlib,datetime
+          p=pathlib.Path('private/research/testing_budget_ledger.jsonl')
+          lines=[x for x in p.read_text(encoding='utf-8').splitlines() if x.strip()]
+          events=[json.loads(x) for x in lines]
+          assert events[-1]['event_sha256']=='f76ce2b10ca22c42406ed40b81b6e6d170961f125444c53a6f98c410e14afad3'
+          allow={'8ff7fcd297e699892472eed63ad6dde36f9c1354b515e36c1860d6d9e91ee2b6','6fdde6b0ad4f2f726ffb64d13af53dd011fc5098111dc86c963f9ccfce4c1255'}
+          bad=[]
+          prev=None
+          for i,e in enumerate(events):
+              if i and e.get('previous_event_sha256')!=prev:
+                  bad.append({'line':i+1,'type':'CHAIN_LINK','claimed_prev':e.get('previous_event_sha256'),'expected_prev':prev})
+              q=dict(e); claimed=q.pop('event_sha256')
+              got=hashlib.sha256(json.dumps(q,ensure_ascii=False,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+              if got!=claimed and claimed not in allow:
+                  bad.append({'line':i+1,'type':'EVENT_HASH','claimed':claimed,'got':got})
+              prev=claimed
+          assert not bad,bad
+          v={'schema':'M8_GTB_FULL_CHAIN_VALIDATION_RQ008_PRESEAL_V1','status':'PASS_WITH_KNOWN_RQ003_CORRECTION','line_count':len(events),'head_before_rq008':events[-1]['event_sha256'],'allowed_historical_mismatches':sorted(allow),'unexpected_findings':[]}
+          vp=pathlib.Path('private/research/rq008/GTB_FULL_CHAIN_VALIDATION_RQ008_PRESEAL.json')
+          vp.parent.mkdir(parents=True,exist_ok=True)
+          vp.write_text(json.dumps(v,ensure_ascii=False,sort_keys=True,separators=(',',':'))+'\n',encoding='utf-8')
+          vsha=hashlib.sha256(vp.read_bytes()).hexdigest()
+          now=datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=9))).replace(microsecond=0).isoformat()
+          e={
+            'schema':'M8_GLOBAL_TESTING_BUDGET_LEDGER_EVENT_V1','epoch':'M8_GTB_EPOCH_20260927','event_type':'FAMILY_PREREGISTRATION_SEAL','sequence':4,'family_index':4,
+            'research_id':'RQ008_PURCHASE10_EVIDENCE_SHAPE_MAPPING_V1_20260928','alpha_global':'1/20','alpha_j':'1/400','alpha_state':'SPENT_PVALUE','allocated_alpha_total':'1/25','remaining_alpha_bound':'1/100','next_family_index':5,'next_family_alpha':'1/600',
+            'primary_comparisons':1,'carryforward_hypotheses':50,'carryforward_assigned_p':'1','holm_hypotheses_total':51,'raw_p_smallest_step_threshold':'1/20400',
+            'prereg_sha256':'9e8788073cb575cdedf4d1ef8e3911855e88ee78623af44faec31f7fb76cd9db','research_code_sha256':'fd37470c330dd3a712c75ff13c3200f5391e3443d4fdc3935449b4ceeceb0304','execution_code_sha256':'84b724c3b3e7e1d7e52ac8ba2a27798bfd3a58ea19e5740691c0df060c3955ba','production_select_sha256':'bfee66330de2645801c5fffbee885ec79a0d39980dc8d81d79f68a1bf3dd819b','production_generate_sha256':'47a39c6690a88f08d6a8fbeddf86202615e830f3eb7e69f7fdbe2b9957bf6ecb',
+            'gpt_two_pass_audit_sha256':'b50ff2dcf30fe5414eee6e79c7c68cf2c35de08e9a8d348ebd58d2d529bf29ed','gpt_audit_policy_sha256':'7eb46a330f475689ed641eeb433ce3432c5de3657703756db615d3c772a2d126','audit_authority':'GPT_TWO_PASS_SELF_AUDIT_BY_USER_EXPLICIT_OVERRIDE_NOT_INDEPENDENT_THIRD_PARTY','gtb_full_chain_validation_sha256':vsha,
+            'seal_master_sha256':'d326607218b562a1c41bad6c2ae6db04b2ede96101078c527312786202ed3a88','seal_tsq_sha256':'26fe47abfe2807e747e123d243e9fc584dfa2c6cc6694d8faa66a6281368ee6b','seal_tsr_sha256':'44bbae7b0cec42228cd0296df760fca9922b7e6812d0a63fab31e77ba5cc1db9','seal_workflow_run_id':36395298920,'seal_artifact_id':10957193700,'seal_artifact_digest_sha256':'d6d889496b0c3595ecfcbc97700cc948330ca25b0774e29c4c5901f67da7f0ed','seal_gentime_utc':'2026-09-28T08:05:38Z',
+            'historical_confirmatory_credit':0,'production_promotion':'NOT_GRANTED','production_changed':False,'previous_event_sha256':events[-1]['event_sha256'],'recorded_at_kst':now,'status':'SEALED_EXECUTION_AUTHORIZED','hash_preimage_rule':'SHA256_UTF8_CANONICAL_JSON_SORT_KEYS_NO_SPACES_EXCLUDING_event_sha256'
+          }
+          e['event_sha256']=hashlib.sha256(json.dumps(e,ensure_ascii=False,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+          with p.open('a',encoding='utf-8') as f: f.write(json.dumps(e,ensure_ascii=False,sort_keys=True,separators=(',',':'))+'\n')
+          pathlib.Path('private/research/rq008/RQ008_FAMILY4_SEAL_EVENT.json').write_text(json.dumps(e,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
+          print('EVENT_SHA256='+e['event_sha256'])
+          print('VALIDATION_SHA256='+vsha)
+          PY
+
+      - name: Commit private append-only state
+        run: |
+          set -euo pipefail
+          cd private
+          git config user.name 'm8-public-control-bot'
+          git config user.email 'm8-public-control-bot@users.noreply.github.com'
+          git add research/testing_budget_ledger.jsonl research/rq008/GTB_FULL_CHAIN_VALIDATION_RQ008_PRESEAL.json research/rq008/RQ008_FAMILY4_SEAL_EVENT.json
+          git commit -m 'Seal RQ008 Family4 before historical execution'
+          git push origin HEAD:main
