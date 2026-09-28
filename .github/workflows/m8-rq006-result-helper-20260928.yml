@@ -1,0 +1,135 @@
+name: M8 RQ006 Family3 Result Finalizer 20260928
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  PRIVATE_REPO: soriom1/m8-lotto
+  PRIVATE_BRANCH: main
+  SEAL_HEAD: c82ebae03fcf4b938ccb67771968fbad54952f4ac329bd3e229bb35331cfa129
+  RESULT_SHA: 37c900fa930d5aa6fc5b944710fb653e81704b519562af887d22119c53547cc6
+  POSTAUDIT_SHA: b44fb15c6c649d0447fde0177cfb9d404e2799b0db8cd6f06af03f24ec364f7d
+  RAW_SHA: 35fb97353066fb4b3bb47253b43b4121e5a60a400bb2c4b03afe72d55954025c
+
+jobs:
+  rq006_finalize:
+    if: github.event_name == 'pull_request' && github.head_ref == 'm8-rq006-result-helper-20260928'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout helper branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          path: helper
+
+      - name: Checkout private state repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.PRIVATE_REPO }}
+          ref: ${{ env.PRIVATE_BRANCH }}
+          token: ${{ secrets.M8_PRIVATE_REPO_PAT }}
+          fetch-depth: 0
+          path: private
+
+      - name: Verify RQ006 result and append FAMILY_RESULT
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+          import json,hashlib,pathlib,datetime,os
+          ROOT=pathlib.Path('private')
+          def sha(p): return hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()
+          def canonical_hash(o):
+              d=dict(o); d.pop('event_sha256',None)
+              return hashlib.sha256(json.dumps(d,ensure_ascii=False,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+
+          resultp=ROOT/'research_results/RQ006_FINAL_RESULT_V1.json'
+          auditp=ROOT/'research/rq006/GPT_RQ006_POSTEXEC_AUDIT_V1.json'
+          assert sha(resultp)==os.environ['RESULT_SHA']
+          assert sha(auditp)==os.environ['POSTAUDIT_SHA']
+          result=json.loads(resultp.read_text(encoding='utf-8'))
+          audit=json.loads(auditp.read_text(encoding='utf-8'))
+          assert result['raw_sha256']==os.environ['RAW_SHA']
+          assert result['verdict']=='RQ006_CLOSED_NO_ADVANCEMENT'
+          assert result['passing_variants']==[]
+          assert result['production_changed'] is False
+          assert audit['status']=='PASS'
+          assert audit['verdict_recheck']==result['verdict']
+          assert audit['sealed_execution']['raw_sha256']==result['raw_sha256']
+          assert audit['sealed_execution']['summary_sha256']==os.environ['RESULT_SHA']
+
+          ledger=ROOT/'research/testing_budget_ledger.jsonl'
+          rows=[json.loads(x) for x in ledger.read_text(encoding='utf-8').splitlines() if x.strip()]
+          assert rows[-1]['event_sha256']==os.environ['SEAL_HEAD'], rows[-1]['event_sha256']
+          assert rows[-1]['event_type']=='FAMILY_PREREGISTRATION_SEAL'
+          assert rows[-1]['family_index']==3
+
+          now=datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=9))).isoformat(timespec='seconds')
+          event={
+            'schema':'M8_GLOBAL_TESTING_BUDGET_LEDGER_EVENT_V1',
+            'event_type':'FAMILY_RESULT',
+            'epoch':'M8_GTB_EPOCH_20260927',
+            'family_index':3,
+            'sequence':3,
+            'status':'CLOSED_NO_ADVANCEMENT',
+            'family_verdict':'RQ006_CLOSED_NO_ADVANCEMENT',
+            'previous_event_sha256':os.environ['SEAL_HEAD'],
+            'hash_preimage_rule':'SHA256_UTF8_CANONICAL_JSON_SORT_KEYS_NO_SPACES_EXCLUDING_event_sha256',
+            'alpha_j':'1/240',
+            'alpha_state':'SPENT_PVALUE',
+            'allocated_alpha_total':'3/80',
+            'remaining_alpha_bound':'1/80',
+            'next_family_index':4,
+            'next_family_alpha':'1/400',
+            'primary_comparisons':3,
+            'carryforward_hypotheses':37,
+            'holm_hypotheses_total':40,
+            'historical_confirmatory_credit':0,
+            'research_id':'RQ006_LONG20_REPRESENTATIVE_2X2_V1_20260928',
+            'rounds':943,
+            'rows':3772,
+            'raw_sha256':result['raw_sha256'],
+            'result_summary_sha256':os.environ['RESULT_SHA'],
+            'postexec_gpt_audit_sha256':os.environ['POSTAUDIT_SHA'],
+            'audit_authority':'GPT_POSTEXEC_DETERMINISTIC_RECOMPUTATION_NOT_INDEPENDENT_THIRD_PARTY',
+            'production_changed':False,
+            'variant_verdicts':{
+              v:{'sum_diff':d['sum_diff'],'early_sum_diff':d['early_sum_diff'],'late_sum_diff':d['late_sum_diff'],'raw_p':d['raw_p_fraction'],'holm_p':d['holm_p_fraction'],'pass':d['pass'],'pool_changed_rounds':d['pool_changed_rounds']}
+              for v,d in result['variants'].items()
+            },
+            'recorded_at_kst':now
+          }
+          event['event_sha256']=canonical_hash(event)
+          with ledger.open('a',encoding='utf-8') as f:
+              f.write(json.dumps(event,ensure_ascii=False,sort_keys=True,separators=(',',':'))+'\n')
+
+          sealed=ROOT/'current_state/M8_CURRENT_STATE_RQ006_SEALED_EXECUTION_AUTHORIZED_V1.json'
+          st=json.loads(sealed.read_text(encoding='utf-8'))
+          assert st['gtb']['ledger_head_sha256']==os.environ['SEAL_HEAD']
+          st['schema']='M8_CURRENT_STATE_RQ006_CLOSED_V1'
+          st['status']='AUTHORITATIVE_CURRENT_STATE'
+          st['gtb']['ledger_head_sha256']=event['event_sha256']
+          st['rq006']['status']='CLOSED_NO_ADVANCEMENT'
+          st['rq006']['verdict']='RQ006_CLOSED_NO_ADVANCEMENT'
+          st['rq006']['raw_sha256']=result['raw_sha256']
+          st['rq006']['result_summary_sha256']=os.environ['RESULT_SHA']
+          st['rq006']['postexec_gpt_audit_sha256']=os.environ['POSTAUDIT_SHA']
+          st['rq006']['result_event_sha256']=event['event_sha256']
+          st['rq006']['target_outcome_scoring_performed']=True
+          st['production_changed']=False
+          st['rq006']['production_changed']=False
+          st['next_gate']='RQ006_CLOSED_NO_ADVANCEMENT; PRODUCTION_UNCHANGED; NEXT_FAMILY4_REQUIRES_EXPLICIT_USER_INSTRUCTION_AND_NEW_PREREGISTRATION'
+          out=ROOT/'current_state/M8_CURRENT_STATE_RQ006_CLOSED_V1.json'
+          out.write_text(json.dumps(st,ensure_ascii=False,sort_keys=True,separators=(',',':'))+'\n',encoding='utf-8')
+          print('RQ006_RESULT_EVENT_SHA='+event['event_sha256'])
+          PY
+          cd private
+          git config user.name 'm8-rq006-result-bot'
+          git config user.email 'm8-rq006-result-bot@users.noreply.github.com'
+          git add research/testing_budget_ledger.jsonl current_state/M8_CURRENT_STATE_RQ006_CLOSED_V1.json research_results/RQ006_FINAL_RESULT_V1.json research/rq006/GPT_RQ006_POSTEXEC_AUDIT_V1.json research/rq006/RQ006_2X2_PREREG_FINAL_V2.md research/rq006/rq006_long20_2x2.py research/rq006/rq006_execute_postseal.py
+          git commit -m 'Close RQ006 Family3 no advancement'
+          git push origin HEAD:${PRIVATE_BRANCH}
