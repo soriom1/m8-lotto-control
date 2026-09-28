@@ -1,0 +1,63 @@
+name: M8 RQ008 One-Shot Execution Repair Append
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/m8-rq008-execution-repair-append-once.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  append:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout private state repository
+        uses: actions/checkout@v4
+        with:
+          repository: soriom1/m8-lotto
+          ref: main
+          token: ${{ secrets.M8_PRIVATE_REPO_PAT }}
+          fetch-depth: 0
+          path: private
+
+      - name: Append deterministic RQ008 execution repair event
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,hashlib,pathlib,datetime
+          p=pathlib.Path('private/research/testing_budget_ledger.jsonl')
+          lines=[x for x in p.read_text(encoding='utf-8').splitlines() if x.strip()]
+          last=json.loads(lines[-1])
+          assert last['event_sha256']=='8b35aeb32a48b8d0ffc69d5d6adc3faafee4b8333db067c7edd6991aa371006a'
+          q=dict(last); claimed=q.pop('event_sha256')
+          got=hashlib.sha256(json.dumps(q,ensure_ascii=False,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+          assert got==claimed,(got,claimed)
+          repair={
+            'schema':'M8_RQ008_EXECUTION_REPAIR_V2','status':'PASS_OUTPUT_NEUTRAL_REPAIR_AUTHORIZABLE','research_id':'RQ008_PURCHASE10_EVIDENCE_SHAPE_MAPPING_V1_20260928',
+            'reason':['The originally sealed serial execution exceeded the runtime envelope after outcome-dependent execution had begun.','The sealed writer also serialized literal backslash-n separators, producing invalid JSONL/JSON file bytes.'],
+            'sealed_execution_code_sha256':'84b724c3b3e7e1d7e52ac8ba2a27798bfd3a58ea19e5740691c0df060c3955ba','accelerator_code_sha256':'7a36e2f9d0ee6df21cfbde78f28c21861cb3f66bdb9890aa1654e9a526d80d94','regression_rounds':'300-311',
+            'regression':{'semantic_rows_after_normalizing_sealed_separator_bug':'12/12 EXACT','all_registered_statistics_exact':'PASS','original_serial_raw_sha256':'83f4200bd21056eb7a23a15dd4b74e13c0740e7ae8d3b068e1ac4af179cbabbe','accelerator_valid_jsonl_raw_sha256':'8f140d991cdf5a5b5799e16fb2abe46474bbc767eaae25758f0a057b81747f54','only_expected_difference':'serialization separator bytes and accelerator summary round-count field for the reduced regression fixture'},
+            'research_mapping_semantics_changed':False,'statistical_rule_changed':False,'favorable_restart':False,'alpha_refund':False,'production_changed':False,'error_first_disposition':'SERIALIZATION/RUNTIME FAILURE CLOSED BY DETERMINISTIC REGRESSION BEFORE RESUMED FULL EXECUTION'
+          }
+          rp=pathlib.Path('private/research/rq008/RQ008_EXECUTION_REPAIR_V2.json')
+          rp.write_text(json.dumps(repair,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
+          assert hashlib.sha256(rp.read_bytes()).hexdigest()=='cfd099b99cf523e2401f9ab46883dabb5d4f105cb754a3ab5f9525f6e15a32fd'
+          now=datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=9))).replace(microsecond=0).isoformat()
+          e={'schema':'M8_GLOBAL_TESTING_BUDGET_LEDGER_EVENT_V1','epoch':'M8_GTB_EPOCH_20260927','event_type':'EXECUTION_REPAIR','family_index':4,'research_id':'RQ008_PURCHASE10_EVIDENCE_SHAPE_MAPPING_V1_20260928','alpha_j':'1/400','alpha_state':'SPENT_PVALUE','allocated_alpha_total':'1/25','remaining_alpha_bound':'1/100','next_family_index':5,'next_family_alpha':'1/600','previous_event_sha256':claimed,'repair_record_sha256':'cfd099b99cf523e2401f9ab46883dabb5d4f105cb754a3ab5f9525f6e15a32fd','accelerator_code_sha256':'7a36e2f9d0ee6df21cfbde78f28c21861cb3f66bdb9890aa1654e9a526d80d94','sealed_execution_code_sha256':'84b724c3b3e7e1d7e52ac8ba2a27798bfd3a58ea19e5740691c0df060c3955ba','regression':'300-311_12_OF_12_SEMANTIC_ROWS_EXACT_AFTER_NORMALIZING_SEALED_SEPARATOR_BUG','outcome_access_before_repair':True,'favorable_restart':False,'alpha_refund':False,'research_semantics_changed':False,'historical_confirmatory_credit':0,'production_changed':False,'recorded_at_kst':now,'status':'RESUME_EXECUTION_AUTHORIZED','hash_preimage_rule':'SHA256_UTF8_CANONICAL_JSON_SORT_KEYS_NO_SPACES_EXCLUDING_event_sha256'}
+          e['event_sha256']=hashlib.sha256(json.dumps(e,ensure_ascii=False,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+          with p.open('a',encoding='utf-8') as f:f.write(json.dumps(e,ensure_ascii=False,sort_keys=True,separators=(',',':'))+'\n')
+          pathlib.Path('private/research/rq008/RQ008_EXECUTION_REPAIR_EVENT.json').write_text(json.dumps(e,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
+          print('EVENT_SHA256='+e['event_sha256'])
+          PY
+
+      - name: Commit private append-only repair record
+        run: |
+          set -euo pipefail
+          cd private
+          git config user.name 'm8-public-control-bot'
+          git config user.email 'm8-public-control-bot@users.noreply.github.com'
+          git add research/testing_budget_ledger.jsonl research/rq008/RQ008_EXECUTION_REPAIR_V2.json research/rq008/RQ008_EXECUTION_REPAIR_EVENT.json
+          git commit -m 'Record output-neutral RQ008 execution repair'
+          git push origin HEAD:main
