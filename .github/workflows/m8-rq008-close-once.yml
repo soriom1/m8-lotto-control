@@ -1,0 +1,58 @@
+name: M8 RQ008 Close Once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/m8-rq008-close-once.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  close-rq008:
+    if: contains(github.event.head_commit.message, 'Add RQ008 close helper')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout private state repository
+        uses: actions/checkout@v4
+        with:
+          repository: soriom1/m8-lotto
+          ref: main
+          token: ${{ secrets.M8_PRIVATE_REPO_PAT }}
+          fetch-depth: 0
+          path: private
+
+      - name: Append exact RQ008 result event and verify chain
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,hashlib,pathlib
+          p=pathlib.Path('private/research/testing_budget_ledger.jsonl')
+          lines=p.read_text(encoding='utf-8').splitlines()
+          assert lines
+          last=json.loads(lines[-1])
+          assert last['event_sha256']=='8b35aeb32a48b8d0ffc69d5d6adc3faafee4b8333db067c7edd6991aa371006a'
+          ev=json.loads(pathlib.Path('private/research_results/RQ008_FAMILY_RESULT_EVENT_V1.json').read_text(encoding='utf-8'))
+          claimed=ev.pop('event_sha256')
+          got=hashlib.sha256(json.dumps(ev,ensure_ascii=False,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+          assert claimed==got=='7335d0e1b38dfb7fea965b991736d06795431f597b36f436070ab787ec0658e7'
+          ev['event_sha256']=claimed
+          assert ev['previous_event_sha256']==last['event_sha256']
+          with p.open('a',encoding='utf-8',newline='') as f:
+              f.write(json.dumps(ev,ensure_ascii=False,sort_keys=True,separators=(',',':'))+'\n')
+          out=p.read_text(encoding='utf-8').splitlines()
+          assert json.loads(out[-1])['event_sha256']==claimed
+          print('RQ008_LEDGER_APPEND_PASS',len(out),claimed)
+          PY
+
+      - name: Push append-only private close
+        run: |
+          set -euo pipefail
+          cd private
+          git config user.name 'm8-rq008-close-bot'
+          git config user.email 'm8-rq008-close-bot@users.noreply.github.com'
+          git add research/testing_budget_ledger.jsonl
+          git diff --cached --check
+          git commit -m 'Close RQ008 Family 4 result append-only'
+          git push origin HEAD:main
