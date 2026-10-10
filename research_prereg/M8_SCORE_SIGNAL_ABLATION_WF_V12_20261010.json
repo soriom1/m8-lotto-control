@@ -1,0 +1,65 @@
+{
+  "schema": "M8_RESEARCH_PREREG_HASH_SEAL_V1",
+  "research_id": "M8_SCORE_SIGNAL_ABLATION_WF_V12_20261010",
+  "status": "PREREG_HASH_RECORD_ONLY_NOT_EXECUTION_ACTIVATION",
+  "round_range": [
+    300,
+    1244
+  ],
+  "round_count": 945,
+  "historical_confirmatory_credit": 0,
+  "baseline": "B00",
+  "parity_control": "S00",
+  "comparison_ids": [
+    "A01",
+    "A02",
+    "A03",
+    "A04",
+    "A05",
+    "A06",
+    "A07",
+    "C01",
+    "C02",
+    "C03",
+    "C04",
+    "C05",
+    "E01",
+    "E02",
+    "E03",
+    "Z01"
+  ],
+  "segments": [
+    [
+      300,
+      535
+    ],
+    [
+      536,
+      771
+    ],
+    [
+      772,
+      1007
+    ],
+    [
+      1008,
+      1244
+    ]
+  ],
+  "stage1": "one-sided paired mean-hits Holm16 development screen alpha 0.05",
+  "stage2": "c(h) model delta >0, >=3/4 positive segments, Pool18 5+ count nondecreasing",
+  "prereg_content_sha256": "a94aaa9be4f0412456b0cc179441dd734951ed69b3581c0346f3f4c0866dd63e",
+  "directive_private_commit": "374fc6f7ae25331c101a33e02ea4170a61ea6432",
+  "code_sha256": {
+    "history_reader_repair.py": "7f9bc556bea4f4f804da5735c3f4e7db9c6216677c0f2d8054b1efc22cc83cec",
+    "safe_wf_gate.py": "3743a2cebe34150b6e36cb94978c74a8236db94bcfb6f281ca64ffbf9a7cf461",
+    "shadow_selector.py": "aaaecc3ffaf57a755155e84f22fa601559aa0455e4619286b92d881023575d08",
+    "stats_4plus.py": "236e4dd369f3f79005e8f9deb052b9a05db0039a460dbdd1c410ceb3943864f9",
+    "trusted_activation.py": "7edd479568e0d968e669da2a8ce966eed81814349c86cfc008b0408e83c57519",
+    "wf_runner.py": "5b8cc04f142c5180f168cd94023b44f8478d6154f6f661665b71a40827cd0541"
+  },
+  "execution_gate": "REMAINS_BLOCKED_UNTIL_PRIVATE_CURRENT_STATE_REVIEWED_SCOPE_CLOSURE_AND_PUBLIC_ACTIVATION",
+  "production_change": false,
+  "round1245_change": false,
+  "note": "Hash-only preregistration submission; protected main merge with acceptance status required. It is not evidence of predictive efficacy."
+}
